@@ -2,3 +2,5 @@
 Cargo.lock.bak
 *.swp
 .DS_Store
+/.ritalin/
+/.task-incomplete
