@@ -63,7 +63,7 @@ If you are the agent reading this: run `akm agent-info --json` and use it.
 | `akm add NAME` | Store a key from stdin or argv. |
 | `akm get NAME` | Retrieve, masked. Pass `--raw` for the unmasked value. |
 | `akm run --only NAME -- <cmd>` | Run `<cmd>` with named keys injected as env vars. Output redacted. |
-| `akm push vercel\|gh\|fly NAME ...` | Push a key to a deployment platform. |
+| `akm stdin NAME -- <cmd>` | Write the value to `<cmd>`'s stdin. Works with `vercel env add`, `gh secret set`, `flyctl secrets import`, and any tool that takes a secret on standard input. Output redacted. |
 | `akm list` | Print stored key names (never values). |
 | `akm rm NAME` | Delete a key. |
 | `akm audit` | Print the append-only access log. |

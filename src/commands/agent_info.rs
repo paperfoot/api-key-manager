@@ -39,14 +39,17 @@ pub fn run(_args: Args, _global: &Global) -> Result<u8> {
             "run":  {
                 "args": ["-- <cmd> [args...]"],
                 "flags": ["--only KEY,KEY", "--all", "--no-redact"],
+                "transport": "env",
                 "redacts_child_output": true,
-                "envelope_on": "stderr"
+                "envelope_on": "stderr",
+                "use_when": "the upstream tool reads secrets from environment variables"
             },
-            "push": {
-                "args": ["target", "name"],
-                "flags": ["--env", "--project", "--repo", "--app", "--json"],
-                "targets": ["vercel","gh","fly"],
-                "transport": "stdin to upstream CLI; child stdout/stderr redacted"
+            "stdin": {
+                "args": ["name", "-- <cmd> [args...]"],
+                "flags": ["--no-redact", "--json"],
+                "transport": "stdin",
+                "redacts_child_output": true,
+                "use_when": "the upstream tool reads the secret from standard input (e.g. `vercel env add`, `gh secret set` without --body, `flyctl secrets import` with NAME=VALUE format)"
             },
             "list": { "flags": ["--json"] },
             "rm":   { "args": ["name"], "flags": ["--json"] },
@@ -57,7 +60,8 @@ pub fn run(_args: Args, _global: &Global) -> Result<u8> {
         },
         "keychain": {
             "backend": "macOS Login Keychain",
-            "service": "com.paperfoot.akm"
+            "service": "com.paperfoot.akm",
+            "enumeration": "SecItemCopyMatching via security-framework::item::ItemSearchOptions"
         },
         "audit_log": "$HOME/.akm/audit.log",
         "threat_model": {

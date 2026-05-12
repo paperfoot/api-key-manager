@@ -1,8 +1,11 @@
 //! End-to-end integration tests.
 //!
 //! Tests use unique random prefixes so reruns don't step on each other. Run
-//! single-threaded (`-- --test-threads=1`) because `security dump-keychain`
-//! does not always reflect concurrent writes.
+//! single-threaded (`-- --test-threads=1`) because the macOS Keychain itself
+//! has eventual-consistency edge cases when many writers churn concurrently —
+//! even with v0.1.3's `ItemSearchOptions`-based enumeration (which is far
+//! more robust than the v0.1.2 `security dump-keychain` text parser, but not
+//! perfectly atomic under cargo's default thread fan-out).
 
 #![cfg(target_os = "macos")]
 
@@ -224,17 +227,62 @@ fn run_json_envelope_does_not_pollute_child_stdout() {
     cleanup(&name);
 }
 
-/// Fix #10: bad input must exit 3, not 1.
+/// v0.1.3: `akm stdin NAME -- <cmd>` writes the value to the child's stdin.
 #[test]
-fn missing_repo_for_push_gh_exits_bad_input() {
-    let name = unique_key("PUSH_GH_NOREPO");
+fn stdin_writes_value_to_child_stdin() {
+    let name = unique_key("STDIN_PIPE");
+    let value = "stdin-pipe-test-value-abc1234567890";
     akm()
         .args(["add", &name])
-        .write_stdin("temp-value-not-actually-pushed-1234567890")
+        .write_stdin(value)
         .assert()
         .success();
-    let out = akm().args(["push", "gh", &name]).output().unwrap();
-    assert_eq!(out.status.code().unwrap(), 3, "missing --repo should be bad_input (3)");
+
+    // /bin/cat echoes stdin to stdout. With --no-redact we get the raw value;
+    // assert we see exactly what we put in.
+    let out = akm()
+        .args(["stdin", &name, "--no-redact", "--", "/bin/cat"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let body = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        body.contains(value),
+        "child should receive the value on stdin, got: {:?}",
+        body
+    );
+    cleanup(&name);
+}
+
+/// v0.1.3: stdin command redacts the value from child stdout by default.
+#[test]
+fn stdin_redacts_value_in_child_output() {
+    let name = unique_key("STDIN_REDACT");
+    let value = "stdin-redact-test-value-xyz9876543210";
+    akm()
+        .args(["add", &name])
+        .write_stdin(value)
+        .assert()
+        .success();
+
+    // Child reads value from stdin, then prints it back. Default mode should
+    // replace the value with [REDACTED:NAME].
+    let out = akm()
+        .args(["stdin", &name, "--", "/bin/cat"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let body = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !body.contains(value),
+        "raw value must not appear in redacted stdout, got: {:?}",
+        body
+    );
+    assert!(
+        body.contains(&format!("[REDACTED:{}]", name)),
+        "redaction token should appear, got: {:?}",
+        body
+    );
     cleanup(&name);
 }
 

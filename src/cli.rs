@@ -16,7 +16,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
                   without writing plaintext to disk, shell history, or process argv. Designed so that AI \
                   coding agents (Claude Code, Cursor, Codex) can drive the entire workflow with no \
                   human-in-the-loop prompts.",
-    after_long_help = "Tips:\n  - From an agent, pass key values via the subprocess stdin API (e.g. Python\n    `subprocess.run([\"akm\",\"add\",\"NAME\"], input=value)`). Avoid wrapping the value in a shell command — it lands in shell history.\n  - Use `akm run --only OPENAI_API_KEY -- <cmd>` to scope injection. `--all` injects every stored key (large blast radius).\n  - Use `akm push vercel <name> --env production` to upload without copy-paste.\n  - Run `akm agent-info --json` for a machine-readable capability manifest.\n  - Install the agent skill: `akm skill install`.\n\nExamples:\n  printf %s \"$VALUE\" | akm add OPENAI_API_KEY\n  akm run --only OPENAI_API_KEY -- python script.py\n  akm push gh OPENAI_API_KEY --repo me/myproj\n  akm list --json | jq '.data.keys[]'"
+    after_long_help = "Tips:\n  - From an agent, pass key values via the subprocess stdin API (e.g. Python\n    `subprocess.run([\"akm\",\"add\",\"NAME\"], input=value)`). Avoid wrapping the value in a shell command — it lands in shell history.\n  - Use `akm run --only OPENAI_API_KEY -- <cmd>` to scope injection. `--all` injects every stored key (large blast radius).\n  - Use `akm stdin <name> -- vercel env add <name> production --force` to feed the value to any upstream CLI.\n  - Run `akm agent-info --json` for a machine-readable capability manifest.\n  - Install the agent skill: `akm skill install`.\n\nExamples:\n  printf %s \"$VALUE\" | akm add OPENAI_API_KEY\n  akm run --only OPENAI_API_KEY -- python script.py\n  akm stdin OPENAI_API_KEY -- gh secret set OPENAI_API_KEY --repo me/myproj\n  akm list --json | jq '.data.keys[]'"
 )]
 pub struct Cli {
     #[command(flatten)]
@@ -45,8 +45,8 @@ pub enum Cmd {
     Get(commands::get::Args),
     /// Run a command with keys injected as environment variables.
     Run(commands::run::Args),
-    /// Push a key to a deployment platform (vercel, gh, fly).
-    Push(commands::push::Args),
+    /// Write a key value to a child process's stdin (replaces push wrappers).
+    Stdin(commands::stdin_cmd::Args),
     /// List stored key names.
     List(commands::list::Args),
     /// Remove a key.
@@ -68,7 +68,7 @@ pub fn run() -> u8 {
         Cmd::Add(args) => commands::add::run(args, &global),
         Cmd::Get(args) => commands::get::run(args, &global),
         Cmd::Run(args) => commands::run::run(args, &global),
-        Cmd::Push(args) => commands::push::run(args, &global),
+        Cmd::Stdin(args) => commands::stdin_cmd::run(args, &global),
         Cmd::List(args) => commands::list::run(args, &global),
         Cmd::Rm(args) => commands::rm::run(args, &global),
         Cmd::Audit(args) => commands::audit_cmd::run(args, &global),

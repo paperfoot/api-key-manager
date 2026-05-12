@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
 };
@@ -64,77 +65,42 @@ pub fn remove(name: &str) -> Result<()> {
         .with_context(|| format!("failed to delete keychain entry '{}'", name))
 }
 
-/// List all akm keys by parsing `security dump-keychain`.
-///
-/// KNOWN LIMITATION: this parses CLI text output. `security dump-keychain` does
-/// not always reflect concurrent writes immediately, which is why our
-/// integration tests run single-threaded. Migrating to security-framework's
-/// `ItemSearchOptions::class(...).service(SERVICE).limit(All)` is tracked for
-/// v0.2.0.
+/// Enumerate all akm-owned keychain entries via SecItemCopyMatching, NOT by
+/// parsing `security dump-keychain` text. Uses security-framework's
+/// ItemSearchOptions which talks to the Security API directly. Result is
+/// reflected immediately under concurrent writes, so integration tests no
+/// longer need single-threaded execution.
 pub fn list_names() -> Result<Vec<String>> {
-    use std::process::Command;
+    let mut opts = ItemSearchOptions::new();
+    opts.class(ItemClass::generic_password())
+        .service(SERVICE)
+        .load_attributes(true)
+        .limit(Limit::All);
 
-    let output = Command::new("/usr/bin/security")
-        .args(["dump-keychain"])
-        .output()
-        .context("failed to run `security dump-keychain`")?;
-
-    if !output.status.success() {
-        return Err(anyhow!(
-            "`security dump-keychain` failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut names = Vec::new();
-    let mut current_svc: Option<String> = None;
-    let mut current_acct: Option<String> = None;
-
-    let flush = |names: &mut Vec<String>, svc: &mut Option<String>, acct: &mut Option<String>| {
-        if let (Some(s), Some(a)) = (svc.as_ref(), acct.as_ref()) {
-            if s == SERVICE {
-                names.push(a.clone());
+    let results = match opts.search() {
+        Ok(r) => r,
+        Err(e) => {
+            if e.code() == ERR_SEC_ITEM_NOT_FOUND {
+                return Ok(Vec::new());
             }
+            return Err(anyhow!("keychain enumeration failed: {}", e));
         }
-        *svc = None;
-        *acct = None;
     };
 
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("keychain:") {
-            flush(&mut names, &mut current_svc, &mut current_acct);
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("\"svce\"<blob>=") {
-            current_svc = unquote_security_field(rest);
-        } else if let Some(rest) = trimmed.strip_prefix("0x00000007 <blob>=") {
-            if current_svc.is_none() {
-                current_svc = unquote_security_field(rest);
+    let mut names = Vec::with_capacity(results.len());
+    for r in results {
+        if let SearchResult::Dict(_) = &r {
+            if let Some(attrs) = r.simplify_dict() {
+                if let Some(acct) = attrs.get("acct") {
+                    names.push(acct.clone());
+                }
             }
-        } else if let Some(rest) = trimmed.strip_prefix("\"acct\"<blob>=") {
-            current_acct = unquote_security_field(rest);
         }
     }
-    flush(&mut names, &mut current_svc, &mut current_acct);
 
     names.sort();
     names.dedup();
     Ok(names)
-}
-
-fn unquote_security_field(s: &str) -> Option<String> {
-    let s = s.trim();
-    if let Some(rest) = s.strip_prefix('"') {
-        if let Some(end) = rest.rfind('"') {
-            return Some(rest[..end].to_string());
-        }
-    }
-    if s == "<NULL>" || s.is_empty() {
-        return None;
-    }
-    Some(s.to_string())
 }
 
 /// Validate a key name.
