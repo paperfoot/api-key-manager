@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: test (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+      - name: Build
+        run: cargo build --release --verbose
+      - name: Unit tests
+        run: cargo test --release --lib --verbose
+      - name: Integration tests
+        # `security dump-keychain` does not always reflect concurrent writes —
+        # we run integration tests single-threaded so list/rm see consistent state.
+        run: cargo test --release --test integration --verbose -- --test-threads=1
+      - name: Smoke test
+        run: |
+          ./target/release/akm --version
+          ./target/release/akm agent-info --json | head -c 200
+  clippy:
+    name: clippy + fmt
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --release --all-targets -- -D warnings
