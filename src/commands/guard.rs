@@ -1,12 +1,14 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::Context;
 use clap::{Args as ClapArgs, Subcommand};
 use serde_json::json;
-use std::fs::{create_dir_all, read_dir, read_to_string, write};
+use std::fs::{create_dir_all, write};
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::process::Command as StdCommand;
 
 use crate::cli::Global;
 use crate::envelope;
+use crate::error::{AkmError, Result};
 use crate::exit;
 
 #[derive(Debug, ClapArgs)]
@@ -21,36 +23,38 @@ pub enum Action {
     Install,
     /// Remove the pre-commit hook.
     Uninstall,
-    /// Scan a list of paths for known key prefixes (used by the hook itself).
-    Scan {
-        /// Paths to scan.
-        paths: Vec<PathBuf>,
-    },
+    /// Scan staged files for known API-key prefixes. Reads the staged blob
+    /// content (not the working-tree file), so a "stage then delete" trick
+    /// can't bypass it.
+    Scan,
 }
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
     match args.action {
         Action::Install => install(global),
         Action::Uninstall => uninstall(global),
-        Action::Scan { paths } => scan(paths, global),
+        Action::Scan => scan(global),
     }
 }
 
 fn git_dir() -> Result<PathBuf> {
-    let out = std::process::Command::new("git")
+    let out = StdCommand::new("git")
         .args(["rev-parse", "--git-dir"])
         .output()
-        .context("git not in PATH")?;
+        .map_err(|e| AkmError::Internal(anyhow::anyhow!("git not in PATH: {e}")))?;
     if !out.status.success() {
-        return Err(anyhow!("not inside a git repository"));
+        return Err(AkmError::BadInput("not inside a git repository".into()));
     }
-    let s = String::from_utf8(out.stdout)?;
+    let s = String::from_utf8(out.stdout)
+        .map_err(|e| AkmError::Internal(anyhow::anyhow!("invalid utf-8 from git: {e}")))?;
     let trimmed = s.trim();
     let p = PathBuf::from(trimmed);
     if p.is_absolute() {
         Ok(p)
     } else {
-        Ok(std::env::current_dir()?.join(p))
+        Ok(std::env::current_dir()
+            .map_err(AkmError::from)?
+            .join(p))
     }
 }
 
@@ -60,7 +64,7 @@ fn hook_path() -> Result<PathBuf> {
 
 const HOOK_SCRIPT: &str = "#!/usr/bin/env sh
 # Installed by akm: scans staged files for known API-key prefixes.
-exec akm guard scan $(git diff --cached --name-only --diff-filter=ACM)
+exec akm guard scan
 ";
 
 fn install(global: &Global) -> Result<u8> {
@@ -90,11 +94,7 @@ fn install(global: &Global) -> Result<u8> {
 
 fn uninstall(global: &Global) -> Result<u8> {
     let p = hook_path()?;
-    let removed = if p.exists() {
-        std::fs::remove_file(&p).is_ok()
-    } else {
-        false
-    };
+    let removed = p.exists() && std::fs::remove_file(&p).is_ok();
     let json_mode = global.json || !std::io::stdout().is_terminal();
     if json_mode {
         println!(
@@ -106,11 +106,11 @@ fn uninstall(global: &Global) -> Result<u8> {
 }
 
 const PATTERNS: &[(&str, &str)] = &[
-    ("OpenAI", "sk-"),
     ("OpenAI (project)", "sk-proj-"),
     ("Anthropic", "sk-ant-"),
-    ("GitHub PAT (classic)", "ghp_"),
+    ("OpenAI", "sk-"),
     ("GitHub PAT (fine-grained)", "github_pat_"),
+    ("GitHub PAT (classic)", "ghp_"),
     ("GitHub OAuth", "gho_"),
     ("Slack bot", "xoxb-"),
     ("Slack user", "xoxp-"),
@@ -120,21 +120,59 @@ const PATTERNS: &[(&str, &str)] = &[
     ("AWS access key id", "AKIA"),
 ];
 
-fn scan(paths: Vec<PathBuf>, global: &Global) -> Result<u8> {
+/// List the paths of staged blobs as added/copied/modified, NUL-delimited so
+/// filenames with spaces / newlines are handled correctly.
+fn staged_paths() -> Result<Vec<String>> {
+    let out = StdCommand::new("git")
+        .args(["diff", "--cached", "--name-only", "--diff-filter=ACM", "-z"])
+        .output()
+        .context("failed to run git diff --cached")
+        .map_err(AkmError::Internal)?;
+    if !out.status.success() {
+        return Err(AkmError::Internal(anyhow::anyhow!(
+            "git diff --cached failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+    let paths: Vec<String> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    Ok(paths)
+}
+
+/// Read the staged-blob contents for a path (not the working-tree file).
+fn staged_blob(path: &str) -> Result<Vec<u8>> {
+    let out = StdCommand::new("git")
+        .args(["show", &format!(":{}", path)])
+        .output()
+        .map_err(AkmError::from)?;
+    if !out.status.success() {
+        return Err(AkmError::Internal(anyhow::anyhow!(
+            "git show :{} failed",
+            path
+        )));
+    }
+    Ok(out.stdout)
+}
+
+fn scan(global: &Global) -> Result<u8> {
+    let paths = staged_paths()?;
     let mut hits: Vec<serde_json::Value> = Vec::new();
     for p in &paths {
-        if !p.is_file() {
-            continue;
-        }
-        let content = match read_to_string(p) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let bytes = match staged_blob(p) {
+            Ok(b) => b,
+            Err(_) => continue, // binary or unreadable staged entry — skip
         };
+        // Lossy is fine: we are matching ASCII prefixes.
+        let content = String::from_utf8_lossy(&bytes);
         for (label, needle) in PATTERNS {
             if let Some(idx) = content.find(needle) {
                 let line = content[..idx].matches('\n').count() + 1;
                 hits.push(json!({
-                    "path": p.display().to_string(),
+                    "path": p,
                     "line": line,
                     "label": label,
                     "prefix": needle,
@@ -167,10 +205,4 @@ fn scan(paths: Vec<PathBuf>, global: &Global) -> Result<u8> {
         }
         Ok(exit::BAD_INPUT)
     }
-}
-
-// Silence unused-import warning when `read_dir` is not used in tests.
-#[allow(dead_code)]
-fn _unused() {
-    let _ = read_dir(".");
 }

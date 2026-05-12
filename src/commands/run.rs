@@ -1,13 +1,11 @@
-use anyhow::{anyhow, Result};
 use clap::Args as ClapArgs;
-use serde_json::json;
 use std::io::IsTerminal;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
 
 use crate::audit;
 use crate::cli::Global;
-use crate::envelope;
+use crate::error::{AkmError, Result};
 use crate::exit;
 use crate::keychain;
 use crate::redact::Redactor;
@@ -22,8 +20,9 @@ pub struct Args {
     #[arg(long, conflicts_with = "only")]
     pub all: bool,
 
-    /// Disable the child stdout/stderr redactor. Off-by-default redaction is a
-    /// last line of defence against build tools that print env values.
+    /// Disable child stdout/stderr redaction. Off-by-default redaction
+    /// strips injected values from the child's output before they reach the
+    /// agent's transcript.
     #[arg(long)]
     pub no_redact: bool,
 
@@ -34,28 +33,47 @@ pub struct Args {
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
     if args.command.is_empty() {
-        return Err(anyhow!("no command provided after `--`"));
+        return Err(AkmError::BadInput("no command provided after `--`".into()));
     }
     if args.only.is_empty() && !args.all {
-        return Err(anyhow!(
+        return Err(AkmError::BadInput(
             "specify --only KEY[,KEY...] or --all (refusing to inject everything by default)"
+                .into(),
         ));
     }
 
     let names = if args.all {
-        keychain::list_names()?
+        keychain::list_names().map_err(AkmError::Internal)?
     } else {
+        // Validate each --only name (catches "FOO=BAR" attempts).
+        for n in &args.only {
+            keychain::validate_name(n).map_err(|e| AkmError::BadInput(e.to_string()))?;
+        }
         args.only.clone()
     };
 
     if names.is_empty() {
-        return Err(anyhow!("no keys to inject"));
+        return Err(AkmError::BadInput("no keys to inject".into()));
     }
 
     let mut pairs: Vec<(String, String)> = Vec::with_capacity(names.len());
     for name in &names {
-        let v = keychain::get(name)?;
+        let v = keychain::get(name).map_err(AkmError::Internal)?;
         pairs.push((name.clone(), v));
+    }
+
+    // Write a `started` audit entry BEFORE handoff so we have a record even if
+    // the child is long-lived or SIGKILLed before completion.
+    {
+        let mut entry = audit::entry_base("run", "started");
+        entry.keys = names.clone();
+        entry.child_command = Some(args.command[0].clone());
+        entry.injected_keys = Some(names.clone());
+        if let Err(e) = audit::append(&entry) {
+            if !global.quiet {
+                eprintln!("akm: warning: audit log write failed: {}", e);
+            }
+        }
     }
 
     let mut cmd = Command::new(&args.command[0]);
@@ -73,35 +91,34 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     let code = if redact {
         run_with_redaction(&mut cmd, secret_pairs)?
     } else {
-        let status = cmd.status()?;
+        let status = cmd.status().map_err(AkmError::from)?;
         status_to_code(status)
     };
 
-    let _ = audit::append(&audit::Entry {
-        ts: audit::now(),
-        akm_version: audit::AKM_VERSION,
-        command: "run",
-        keys: names.clone(),
-        input_mode: None,
-        child_command: Some(args.command[0].clone()),
-        injected_keys: Some(names),
-        push_target: None,
-        cwd: audit::cwd_string(),
-        ppid: audit::ppid(),
-        parent_exe: audit::parent_exe(audit::ppid()),
-        status: if code == 0 { "ok" } else { "child_nonzero" },
-    });
+    let mut entry = audit::entry_base("run", if code == 0 { "ok" } else { "child_nonzero" });
+    entry.keys = names.clone();
+    entry.child_command = Some(args.command[0].clone());
+    entry.injected_keys = Some(names);
+    if let Err(e) = audit::append(&entry) {
+        if !global.quiet {
+            eprintln!("akm: warning: audit log write failed: {}", e);
+        }
+    }
 
+    // Emit the status envelope on STDERR, never stdout — the child owns
+    // stdout and our envelope would corrupt machine-consumed pipelines.
     let json_mode = global.json || !std::io::stdout().is_terminal();
-    if json_mode {
-        println!("{}", envelope::ok(json!({ "exit_code": code })));
+    if json_mode && !global.quiet {
+        let envelope =
+            crate::envelope::ok(serde_json::json!({ "exit_code": code, "command": "run" }));
+        eprintln!("{}", envelope);
     }
     Ok(code)
 }
 
 fn run_with_redaction(cmd: &mut Command, secrets: Vec<(String, String)>) -> Result<u8> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.spawn().map_err(AkmError::from)?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let secrets_a = secrets.clone();
@@ -120,7 +137,7 @@ fn run_with_redaction(cmd: &mut Command, secrets: Vec<(String, String)>) -> Resu
         }
     });
 
-    let status = child.wait()?;
+    let status = child.wait().map_err(AkmError::from)?;
     let _ = out_handle.join();
     let _ = err_handle.join();
     Ok(status_to_code(status))

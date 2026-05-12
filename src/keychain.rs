@@ -27,10 +27,11 @@ pub fn remove(name: &str) -> Result<()> {
 
 /// List all akm keys by parsing `security dump-keychain`.
 ///
-/// Each keychain entry in the dump-keychain output starts with a `keychain:`
-/// line. Inside we collect the `"acct"<blob>=` (the key name) and the service
-/// (either `"svce"<blob>=` or the legacy `0x00000007 <blob>=`). We emit the
-/// name when the entry's service matches `SERVICE`.
+/// KNOWN LIMITATION: this parses CLI text output. `security dump-keychain` does
+/// not always reflect concurrent writes immediately, which is why our
+/// integration tests run single-threaded. Migrating to security-framework's
+/// `ItemSearchOptions::class(...).service(SERVICE).limit(All)` is tracked for
+/// v0.2.0.
 pub fn list_names() -> Result<Vec<String>> {
     use std::process::Command;
 
@@ -97,15 +98,71 @@ fn unquote_security_field(s: &str) -> Option<String> {
     Some(s.to_string())
 }
 
-fn validate_name(name: &str) -> Result<()> {
+/// Validate a key name.
+///
+/// Names must match `[A-Z_][A-Z0-9_]*` (POSIX-compatible env-var name shape).
+/// This rules out names that would break downstream consumers:
+/// - `FOO=BAR` (poisons `cmd.env()` / Fly's `NAME=VALUE` stdin format)
+/// - empty / NUL-containing names
+/// - names starting with a digit (illegal env var in most shells)
+/// - lowercase-only names (sometimes hide capitalization mistakes)
+pub fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(anyhow!("key name cannot be empty"));
-    }
-    if name.contains('\0') {
-        return Err(anyhow!("key name cannot contain NUL bytes"));
     }
     if name.len() > 255 {
         return Err(anyhow!("key name too long (max 255 bytes)"));
     }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_uppercase() || first == '_') {
+        return Err(anyhow!(
+            "invalid key name '{}': must match [A-Z_][A-Z0-9_]* (env-var shape)",
+            name
+        ));
+    }
+    for c in chars {
+        if !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') {
+            return Err(anyhow!(
+                "invalid key name '{}': must match [A-Z_][A-Z0-9_]* (env-var shape)",
+                name
+            ));
+        }
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_env_var_names() {
+        assert!(validate_name("OPENAI_API_KEY").is_ok());
+        assert!(validate_name("_PRIVATE").is_ok());
+        assert!(validate_name("A").is_ok());
+        assert!(validate_name("ABC123_XYZ").is_ok());
+    }
+
+    #[test]
+    fn rejects_equals_in_name() {
+        assert!(validate_name("FOO=BAR").is_err());
+    }
+
+    #[test]
+    fn rejects_lowercase() {
+        assert!(validate_name("foo").is_err());
+        assert!(validate_name("MixedCase").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_and_nul() {
+        assert!(validate_name("").is_err());
+        assert!(validate_name("FOO\0BAR").is_err());
+    }
+
+    #[test]
+    fn rejects_leading_digit() {
+        assert!(validate_name("1FOO").is_err());
+    }
 }

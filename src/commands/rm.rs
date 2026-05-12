@@ -1,4 +1,3 @@
-use anyhow::Result;
 use clap::Args as ClapArgs;
 use serde_json::json;
 use std::io::IsTerminal;
@@ -6,6 +5,7 @@ use std::io::IsTerminal;
 use crate::audit;
 use crate::cli::Global;
 use crate::envelope;
+use crate::error::{AkmError, Result};
 use crate::exit;
 use crate::keychain;
 
@@ -16,25 +16,20 @@ pub struct Args {
 }
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
+    keychain::validate_name(&args.name).map_err(|e| AkmError::BadInput(e.to_string()))?;
+
     let existed = keychain::get(&args.name).is_ok();
     if existed {
-        keychain::remove(&args.name)?;
+        keychain::remove(&args.name).map_err(AkmError::Internal)?;
     }
 
-    let _ = audit::append(&audit::Entry {
-        ts: audit::now(),
-        akm_version: audit::AKM_VERSION,
-        command: "rm",
-        keys: vec![args.name.clone()],
-        input_mode: None,
-        child_command: None,
-        injected_keys: None,
-        push_target: None,
-        cwd: audit::cwd_string(),
-        ppid: audit::ppid(),
-        parent_exe: audit::parent_exe(audit::ppid()),
-        status: if existed { "ok" } else { "noop" },
-    });
+    let mut entry = audit::entry_base("rm", if existed { "ok" } else { "noop" });
+    entry.keys = vec![args.name.clone()];
+    if let Err(e) = audit::append(&entry) {
+        if !global.quiet {
+            eprintln!("akm: warning: audit log write failed: {}", e);
+        }
+    }
 
     let json_mode = global.json || !std::io::stdout().is_terminal();
     if json_mode {

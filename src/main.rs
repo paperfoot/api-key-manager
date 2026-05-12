@@ -4,6 +4,7 @@ mod audit;
 mod cli;
 mod commands;
 mod envelope;
+mod error;
 mod exit;
 mod keychain;
 mod redact;

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::Context;
 use clap::{Args as ClapArgs, ValueEnum};
 use serde_json::json;
 use std::io::{IsTerminal, Write};
@@ -7,8 +7,10 @@ use std::process::{Command, Stdio};
 use crate::audit;
 use crate::cli::Global;
 use crate::envelope;
+use crate::error::{AkmError, Result};
 use crate::exit;
 use crate::keychain;
+use crate::redact::Redactor;
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum Target {
@@ -44,36 +46,46 @@ pub struct Args {
 }
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
-    let value = keychain::get(&args.name)?;
+    keychain::validate_name(&args.name).map_err(|e| AkmError::BadInput(e.to_string()))?;
+
+    let value = keychain::get(&args.name)
+        .map_err(|_| AkmError::NotFound(format!("key '{}' not found", args.name)))?;
+
+    // Started entry before handoff.
+    {
+        let mut entry = audit::entry_base("push", "started");
+        entry.keys = vec![args.name.clone()];
+        entry.push_target = Some(target_label(&args.target));
+        if let Err(e) = audit::append(&entry) {
+            if !global.quiet {
+                eprintln!("akm: warning: audit log write failed: {}", e);
+            }
+        }
+    }
+
+    let target_str = target_label(&args.target);
+    let value_for_redact = value.clone();
 
     let (cmd_label, exit_status) = match args.target {
-        Target::Vercel => push_vercel(&args, &value)?,
-        Target::Gh => push_gh(&args, &value)?,
-        Target::Fly => push_fly(&args, &value)?,
+        Target::Vercel => push_vercel(&args, value)?,
+        Target::Gh => push_gh(&args, value)?,
+        Target::Fly => push_fly(&args, value)?,
     };
 
     let ok = exit_status.success();
-    let target_str = target_label(&args.target);
-    let _ = audit::append(&audit::Entry {
-        ts: audit::now(),
-        akm_version: audit::AKM_VERSION,
-        command: "push",
-        keys: vec![args.name.clone()],
-        input_mode: None,
-        child_command: Some(cmd_label.clone()),
-        injected_keys: None,
-        push_target: Some(target_str),
-        cwd: audit::cwd_string(),
-        ppid: audit::ppid(),
-        parent_exe: audit::parent_exe(audit::ppid()),
-        status: if ok { "ok" } else { "upstream_failed" },
-    });
+    let mut entry = audit::entry_base("push", if ok { "ok" } else { "upstream_failed" });
+    entry.keys = vec![args.name.clone()];
+    entry.child_command = Some(cmd_label.clone());
+    entry.push_target = Some(target_str);
+    if let Err(e) = audit::append(&entry) {
+        if !global.quiet {
+            eprintln!("akm: warning: audit log write failed: {}", e);
+        }
+    }
+    // Suppress unused-warning when redaction is not used.
+    let _ = value_for_redact;
 
-    let code = if ok {
-        exit::SUCCESS
-    } else {
-        exit::TRANSIENT
-    };
+    let code = if ok { exit::SUCCESS } else { exit::TRANSIENT };
     let json_mode = global.json || !std::io::stdout().is_terminal();
     if json_mode {
         println!(
@@ -96,82 +108,102 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     Ok(code)
 }
 
-fn push_vercel(args: &Args, value: &str) -> Result<(String, std::process::ExitStatus)> {
-    which::which("vercel").context("`vercel` CLI not found in PATH")?;
-    // `vercel env add NAME [env]` reads the value from stdin when piped.
+fn spawn_with_redaction(
+    mut cmd: Command,
+    value: String,
+    name: &str,
+    label: String,
+) -> Result<(String, std::process::ExitStatus)> {
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(AkmError::from)?;
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| AkmError::Internal(anyhow::anyhow!("failed to open child stdin")))?;
+        stdin.write_all(value.as_bytes())?;
+    }
+    // Close stdin so the child can finish.
+    drop(child.stdin.take());
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let secrets = vec![(value, format!("[REDACTED:{}]", name))];
+
+    let secrets_a = secrets.clone();
+    let secrets_b = secrets;
+
+    let out_handle = std::thread::spawn(move || {
+        if let Some(mut s) = stdout {
+            let r = Redactor::new(secrets_a);
+            let _ = r.copy(&mut s, std::io::stdout());
+        }
+    });
+    let err_handle = std::thread::spawn(move || {
+        if let Some(mut s) = stderr {
+            let r = Redactor::new(secrets_b);
+            let _ = r.copy(&mut s, std::io::stderr());
+        }
+    });
+
+    let status = child.wait().map_err(AkmError::from)?;
+    let _ = out_handle.join();
+    let _ = err_handle.join();
+    Ok((label, status))
+}
+
+fn push_vercel(args: &Args, value: String) -> Result<(String, std::process::ExitStatus)> {
+    which::which("vercel")
+        .context("`vercel` CLI not found in PATH")
+        .map_err(AkmError::Internal)?;
     let mut cmd = Command::new("vercel");
     cmd.arg("env").arg("add").arg(&args.name).arg(&args.env);
     if let Some(p) = &args.project {
         cmd.arg("--cwd").arg(p);
     }
-    cmd.stdin(Stdio::piped());
     let label = format!("vercel env add {} {}", args.name, args.env);
-    let mut child = cmd.spawn()?;
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| anyhow!("failed to open vercel stdin"))?;
-        stdin.write_all(value.as_bytes())?;
-        stdin.write_all(b"\n")?;
-    }
-    let status = child.wait()?;
-    Ok((label, status))
+    // Vercel reads the value from stdin when piped (one line, then newline).
+    let value_with_newline = format!("{}\n", value);
+    spawn_with_redaction(cmd, value_with_newline, &args.name, label)
 }
 
-fn push_gh(args: &Args, value: &str) -> Result<(String, std::process::ExitStatus)> {
-    which::which("gh").context("`gh` CLI not found in PATH")?;
+fn push_gh(args: &Args, value: String) -> Result<(String, std::process::ExitStatus)> {
+    which::which("gh")
+        .context("`gh` CLI not found in PATH")
+        .map_err(AkmError::Internal)?;
     let repo = args
         .repo
         .as_ref()
-        .ok_or_else(|| anyhow!("--repo OWNER/NAME is required for `push gh`"))?;
-    // `gh secret set NAME --repo X --body -` reads from stdin.
+        .ok_or_else(|| AkmError::BadInput("--repo OWNER/NAME is required for `push gh`".into()))?;
+    // gh secret set NAME --repo X reads from stdin when --body is OMITTED.
+    // The earlier code passed `--body -` which would have stored the literal
+    // `-` string as the secret.
     let mut cmd = Command::new("gh");
     cmd.arg("secret")
         .arg("set")
         .arg(&args.name)
         .arg("--repo")
-        .arg(repo)
-        .arg("--body")
-        .arg("-");
-    cmd.stdin(Stdio::piped());
+        .arg(repo);
     let label = format!("gh secret set {} --repo {}", args.name, repo);
-    let mut child = cmd.spawn()?;
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| anyhow!("failed to open gh stdin"))?;
-        stdin.write_all(value.as_bytes())?;
-    }
-    let status = child.wait()?;
-    Ok((label, status))
+    spawn_with_redaction(cmd, value, &args.name, label)
 }
 
-fn push_fly(args: &Args, value: &str) -> Result<(String, std::process::ExitStatus)> {
-    // `flyctl secrets set KEY=VALUE` places the value on argv (visible in ps).
-    // `flyctl secrets import` reads KEY=VALUE pairs from stdin, which is safer.
+fn push_fly(args: &Args, value: String) -> Result<(String, std::process::ExitStatus)> {
     let bin = which::which("fly")
         .or_else(|_| which::which("flyctl"))
-        .context("`fly` / `flyctl` CLI not found in PATH")?;
+        .context("`fly` / `flyctl` CLI not found in PATH")
+        .map_err(AkmError::Internal)?;
     let app = args
         .app
         .as_ref()
-        .ok_or_else(|| anyhow!("--app APPNAME is required for `push fly`"))?;
+        .ok_or_else(|| AkmError::BadInput("--app APPNAME is required for `push fly`".into()))?;
     let mut cmd = Command::new(bin);
     cmd.arg("secrets").arg("import").arg("--app").arg(app);
-    cmd.stdin(Stdio::piped());
     let label = format!("fly secrets import --app {}", app);
-    let mut child = cmd.spawn()?;
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| anyhow!("failed to open fly stdin"))?;
-        writeln!(stdin, "{}={}", args.name, value)?;
-    }
-    let status = child.wait()?;
-    Ok((label, status))
+    let stdin_payload = format!("{}={}\n", args.name, value);
+    spawn_with_redaction(cmd, stdin_payload, &args.name, label)
 }
 
 fn target_label(t: &Target) -> &'static str {

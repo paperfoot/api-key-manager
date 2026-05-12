@@ -1,4 +1,3 @@
-use anyhow::Result;
 use clap::{Args as ClapArgs, Subcommand};
 use serde_json::json;
 use std::fs::{create_dir_all, write};
@@ -7,6 +6,7 @@ use std::path::PathBuf;
 
 use crate::cli::Global;
 use crate::envelope;
+use crate::error::Result;
 use crate::exit;
 use crate::skill::SKILL_MD;
 

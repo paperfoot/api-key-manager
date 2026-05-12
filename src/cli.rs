@@ -2,6 +2,7 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 
 use crate::commands;
 use crate::envelope;
+use crate::error::AkmError;
 use crate::exit;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -12,10 +13,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
     version = VERSION,
     about = "Agent-driven macOS Keychain CLI for API keys. Zero human friction.",
     long_about = "akm stores API keys in the macOS Login Keychain and injects them into child processes \
-                  without ever writing plaintext to disk, shell history, or process env. Designed so that \
-                  AI coding agents (Claude Code, Cursor, Codex) can drive the entire workflow with no \
+                  without writing plaintext to disk, shell history, or process argv. Designed so that AI \
+                  coding agents (Claude Code, Cursor, Codex) can drive the entire workflow with no \
                   human-in-the-loop prompts.",
-    after_long_help = "Tips:\n  - Use `akm run --only OPENAI_API_KEY,ANTHROPIC_API_KEY -- <cmd>` to scope injection.\n  - Use `akm push vercel <name> --project <p> --env production` to upload without copy-paste.\n  - Pipe values into `akm add NAME` via stdin — argv works but creates an extra copy in `ps` and scrollback.\n  - Run `akm agent-info --json` for a machine-readable capability manifest.\n  - Install the Claude Code skill: `akm skill install`.\n\nExamples:\n  echo \"sk-...\" | akm add OPENAI_API_KEY\n  akm run --only OPENAI_API_KEY -- python script.py\n  akm push gh OPENAI_API_KEY --repo me/myproj\n  akm list --json | jq '.data.keys[]'"
+    after_long_help = "Tips:\n  - From an agent, pass key values via the subprocess stdin API (e.g. Python\n    `subprocess.run([\"akm\",\"add\",\"NAME\"], input=value)`). Avoid wrapping the value in a shell command — it lands in shell history.\n  - Use `akm run --only OPENAI_API_KEY -- <cmd>` to scope injection. `--all` injects every stored key (large blast radius).\n  - Use `akm push vercel <name> --env production` to upload without copy-paste.\n  - Run `akm agent-info --json` for a machine-readable capability manifest.\n  - Install the agent skill: `akm skill install`.\n\nExamples:\n  printf %s \"$VALUE\" | akm add OPENAI_API_KEY\n  akm run --only OPENAI_API_KEY -- python script.py\n  akm push gh OPENAI_API_KEY --repo me/myproj\n  akm list --json | jq '.data.keys[]'"
 )]
 pub struct Cli {
     #[command(flatten)]
@@ -27,7 +28,7 @@ pub struct Cli {
 
 #[derive(Debug, Clone, Default, ClapArgs)]
 pub struct Global {
-    /// Emit JSON envelope output on stdout (forced on when piped).
+    /// Emit JSON envelope output on stdout (forced on when stdout is piped).
     #[arg(long, global = true)]
     pub json: bool,
 
@@ -38,7 +39,7 @@ pub struct Global {
 
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
-    /// Store a key. Reads value from argv, --value, or stdin.
+    /// Store a key. Reads value from argv or stdin.
     Add(commands::add::Args),
     /// Retrieve a key. Masked by default; use --raw for the unmasked value.
     Get(commands::get::Args),
@@ -63,7 +64,7 @@ pub enum Cmd {
 
 pub fn run() -> u8 {
     let Cli { global, command } = Cli::parse();
-    let result = match command {
+    let result: Result<u8, AkmError> = match command {
         Cmd::Add(args) => commands::add::run(args, &global),
         Cmd::Get(args) => commands::get::run(args, &global),
         Cmd::Run(args) => commands::run::run(args, &global),
@@ -77,14 +78,25 @@ pub fn run() -> u8 {
     };
     match result {
         Ok(code) => code,
-        Err(e) => {
+        Err(err) => {
+            // For machine consumers we always emit a JSON error envelope on
+            // stdout. For humans (TTY stdout, not --json) we use stderr.
             let json_mode = global.json || !atty::is(atty::Stream::Stdout);
             if json_mode {
-                println!("{}", envelope::err("internal_error", e.to_string(), None));
+                println!(
+                    "{}",
+                    envelope::err(err.code_str(), err.to_string(), None)
+                );
             } else {
-                eprintln!("akm: error: {}", e);
+                eprintln!("akm: {}: {}", err.code_str(), err);
             }
-            exit::TRANSIENT
+            // BAD_INPUT cap defensively to avoid leaking surprising codes.
+            let code = err.exit_code();
+            if code == 0 {
+                exit::TRANSIENT
+            } else {
+                code
+            }
         }
     }
 }

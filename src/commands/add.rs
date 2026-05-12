@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Result};
 use clap::Args as ClapArgs;
 use serde_json::json;
 use std::io::{IsTerminal, Read};
@@ -6,14 +5,16 @@ use std::io::{IsTerminal, Read};
 use crate::audit;
 use crate::cli::Global;
 use crate::envelope;
+use crate::error::{AkmError, Result};
 use crate::exit;
 use crate::keychain;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Key name (e.g. OPENAI_API_KEY). Convention: env-var-style.
+    /// Key name. Must match [A-Z_][A-Z0-9_]* (env-var shape).
     pub name: String,
-    /// Value as argv (creates a copy in `ps` and shell scrollback; stdin is preferred).
+    /// Value as argv. Creates an extra copy in `ps` and scrollback; the agent
+    /// SDK's subprocess stdin is the preferred path.
     pub value: Option<String>,
     /// Read value from stdin even when argv `value` is present.
     #[arg(long)]
@@ -21,27 +22,23 @@ pub struct Args {
 }
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
+    keychain::validate_name(&args.name).map_err(|e| AkmError::BadInput(e.to_string()))?;
+
     let (value, input_mode) = read_value(&args)?;
     if value.is_empty() {
-        return Err(anyhow!("value cannot be empty"));
+        return Err(AkmError::BadInput("value cannot be empty".into()));
     }
 
     keychain::set(&args.name, &value)?;
 
-    let _ = audit::append(&audit::Entry {
-        ts: audit::now(),
-        akm_version: audit::AKM_VERSION,
-        command: "add",
-        keys: vec![args.name.clone()],
-        input_mode: Some(input_mode),
-        child_command: None,
-        injected_keys: None,
-        push_target: None,
-        cwd: audit::cwd_string(),
-        ppid: audit::ppid(),
-        parent_exe: audit::parent_exe(audit::ppid()),
-        status: "ok",
-    });
+    let mut entry = audit::entry_base("add", "ok");
+    entry.keys = vec![args.name.clone()];
+    entry.input_mode = Some(input_mode);
+    if let Err(e) = audit::append(&entry) {
+        if !global.quiet {
+            eprintln!("akm: warning: audit log write failed: {}", e);
+        }
+    }
 
     let json_mode = global.json || !std::io::stdout().is_terminal();
     if json_mode {

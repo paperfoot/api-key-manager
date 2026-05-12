@@ -5,10 +5,12 @@ use std::io::{Read, Write};
 /// Only matches values that AKM itself provided. When a secret is detected, it
 /// is replaced with the supplied replacement token (e.g. `[REDACTED:NAME]`).
 ///
-/// Streaming algorithm: we keep `max_secret_len - 1` bytes of lookahead in the
-/// buffer so a match cannot span a read boundary. Each iteration we scan the
-/// safe region; matches that extend past the safe-region boundary are still
-/// consumed (since the lookahead guarantees the full match exists in `buf`).
+/// Two properties:
+/// 1. Secrets are sorted by descending length, so a longer secret always wins
+///    over any of its prefixes. (Fixes "prefix collision" leak where a shorter
+///    secret was a prefix of a longer one.)
+/// 2. We keep `max_secret_len - 1` bytes of lookahead so a match cannot span a
+///    read boundary.
 pub struct Redactor {
     secrets: Vec<(String, String)>,
     max_secret_len: usize,
@@ -16,12 +18,12 @@ pub struct Redactor {
 
 impl Redactor {
     pub fn new(secrets: Vec<(String, String)>) -> Self {
-        // Drop tokens shorter than 8 bytes — they produce too many false
-        // positives and don't meaningfully protect anything.
-        let secrets: Vec<_> = secrets
+        let mut secrets: Vec<_> = secrets
             .into_iter()
             .filter(|(t, _)| t.len() >= 8)
             .collect();
+        // Sort by descending length so longer secrets take priority.
+        secrets.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         let max_secret_len = secrets.iter().map(|(t, _)| t.len()).max().unwrap_or(0);
         Self {
             secrets,
@@ -29,7 +31,6 @@ impl Redactor {
         }
     }
 
-    /// Stream `input` to `output`, replacing exact literal secret matches.
     pub fn copy<R: Read, W: Write>(&self, mut input: R, mut output: W) -> std::io::Result<()> {
         if self.secrets.is_empty() {
             std::io::copy(&mut input, &mut output)?;
@@ -45,7 +46,6 @@ impl Redactor {
             buf.extend_from_slice(&chunk[..n]);
             self.flush_safe_region(&mut buf, &mut output)?;
         }
-        // Final flush — no more lookahead concern.
         self.flush_all(&mut buf, &mut output)?;
         Ok(())
     }
@@ -81,7 +81,6 @@ impl Redactor {
                 i += 1;
             }
         }
-        // Drain up to whichever advanced further.
         let drain_to = emitted.max(safe_end);
         if emitted < drain_to {
             out.write_all(&buf[emitted..drain_to])?;
@@ -157,5 +156,39 @@ mod tests {
     fn short_tokens_skipped() {
         let out = redact_str(vec![("abc", "[X]")], "abc 123\n");
         assert_eq!(out, "abc 123\n");
+    }
+
+    #[test]
+    fn prefix_collision_longer_wins() {
+        // Reproduces Codex finding #8: shorter secret was a prefix of longer
+        // secret, first-match-wins leaked the suffix.
+        let out = redact_str(
+            vec![("abcdefgh", "[SHORT]"), ("abcdefghij", "[LONG]")],
+            "abcdefghij\n",
+        );
+        assert_eq!(out, "[LONG]\n");
+    }
+
+    #[test]
+    fn prefix_collision_order_independent() {
+        let out = redact_str(
+            vec![("abcdefghij", "[LONG]"), ("abcdefgh", "[SHORT]")],
+            "abcdefghij\n",
+        );
+        assert_eq!(out, "[LONG]\n");
+    }
+
+    #[test]
+    fn short_secret_after_long_is_caught() {
+        // Long secret eats its match; remaining bytes still contain the short
+        // secret and it should be redacted on a subsequent scan position.
+        let out = redact_str(
+            vec![
+                ("longersecret_token_1234", "[L]"),
+                ("shortone12345", "[S]"),
+            ],
+            "longersecret_token_1234 then shortone12345\n",
+        );
+        assert_eq!(out, "[L] then [S]\n");
     }
 }

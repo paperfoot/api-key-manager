@@ -1,4 +1,3 @@
-use anyhow::Result;
 use clap::Args as ClapArgs;
 use serde_json::{json, Value};
 use std::fs::read_to_string;
@@ -7,6 +6,7 @@ use std::io::IsTerminal;
 use crate::audit;
 use crate::cli::Global;
 use crate::envelope;
+use crate::error::Result;
 use crate::exit;
 
 #[derive(Debug, ClapArgs)]
@@ -18,10 +18,7 @@ pub struct Args {
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
     let path = audit::log_path();
-    let content = match read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => String::new(),
-    };
+    let content = read_to_string(&path).unwrap_or_default();
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(args.limit);
     let tail = &lines[start..];

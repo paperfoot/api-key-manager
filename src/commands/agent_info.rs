@@ -1,9 +1,9 @@
-use anyhow::Result;
 use clap::Args as ClapArgs;
 use serde_json::json;
 
 use crate::cli::{Global, VERSION};
 use crate::envelope;
+use crate::error::Result;
 use crate::exit;
 
 #[derive(Debug, ClapArgs)]
@@ -29,22 +29,52 @@ pub fn run(_args: Args, _global: &Global) -> Result<u8> {
             "6": "not_found"
         },
         "commands": {
-            "add":  { "args": ["name", "[value]"], "flags": ["--stdin", "--json"], "stdin": "value if no argv" },
-            "get":  { "args": ["name"], "flags": ["--raw", "--json"] },
-            "run":  { "args": ["-- <cmd> [args...]"], "flags": ["--only KEY,KEY", "--all", "--no-redact"] },
-            "push": { "args": ["target", "name"], "flags": ["--env", "--project", "--repo", "--app", "--json"], "targets": ["vercel","gh","fly"] },
+            "add":  {
+                "args": ["name", "[value]"],
+                "flags": ["--stdin", "--json"],
+                "stdin": "value if no argv",
+                "name_pattern": "[A-Z_][A-Z0-9_]*"
+            },
+            "get":  { "args": ["name"], "flags": ["--raw", "--json"], "default": "masked" },
+            "run":  {
+                "args": ["-- <cmd> [args...]"],
+                "flags": ["--only KEY,KEY", "--all", "--no-redact"],
+                "redacts_child_output": true,
+                "envelope_on": "stderr"
+            },
+            "push": {
+                "args": ["target", "name"],
+                "flags": ["--env", "--project", "--repo", "--app", "--json"],
+                "targets": ["vercel","gh","fly"],
+                "transport": "stdin to upstream CLI; child stdout/stderr redacted"
+            },
             "list": { "flags": ["--json"] },
             "rm":   { "args": ["name"], "flags": ["--json"] },
-            "audit":{ "flags": ["--limit N", "--json"] },
-            "guard":{ "subcommands": ["install", "uninstall", "scan"] },
-            "skill":{ "subcommands": ["install"], "description": "Install Claude Code skill so agents reach for akm automatically" },
+            "audit":{ "flags": ["--limit N", "--json"], "log_path": "$HOME/.akm/audit.log", "log_mode": "0600" },
+            "guard":{ "subcommands": ["install", "uninstall", "scan"], "scans": "staged blobs (git show :PATH)" },
+            "skill":{ "subcommands": ["install"], "description": "Install agent skill so AI coding agents reach for akm" },
             "agent-info": { "flags": ["--json"], "description": "This manifest" }
         },
         "keychain": {
             "backend": "macOS Login Keychain",
             "service": "com.paperfoot.akm"
         },
-        "audit_log": "$HOME/.akm/audit.log"
+        "audit_log": "$HOME/.akm/audit.log",
+        "threat_model": {
+            "in_scope": [
+                "plaintext .env on disk",
+                "keys in shell history",
+                "keys in `ps -ef` argv",
+                "keys committed to git",
+                "keys re-appearing in agent transcripts",
+                "build-tool printouts"
+            ],
+            "out_of_scope": [
+                "malware running as the same user",
+                "hostile agent that calls `akm get --raw` itself",
+                "`ps -E` of own processes by the same user"
+            ]
+        }
     });
     println!("{}", envelope::ok(manifest));
     Ok(exit::SUCCESS)
