@@ -277,9 +277,17 @@ fn audit_log_perms_are_0600() {
     cleanup(&name);
 }
 
-/// Fix #6: `akm run` writes a "started" audit entry BEFORE the child exits.
+/// Fix #6: `akm run` writes a "started" audit entry BEFORE the child exits,
+/// AND a matching `run_id` pairs the started/completed entries.
+///
+/// Codex flagged the previous version of this test as weak: it used `true`
+/// (instant exit) and checked after, so it didn't prove the ordering. This
+/// version spawns a long-lived child, checks the audit log while it's still
+/// alive, then asserts the paired completion entry exists.
 #[test]
 fn run_writes_started_audit_entry_before_child_exits() {
+    use std::thread;
+    use std::time::Duration;
     let name = unique_key("STARTED");
     akm()
         .args(["add", &name])
@@ -287,37 +295,61 @@ fn run_writes_started_audit_entry_before_child_exits() {
         .assert()
         .success();
 
-    akm()
-        .args([
-            "run",
-            "--only",
-            &name,
-            "--no-redact",
-            "--",
-            "/bin/sh",
-            "-c",
-            "true",
-        ])
-        .assert()
-        .success();
+    // Spawn a long-lived child in the background.
+    let name_c = name.clone();
+    let handle = thread::spawn(move || {
+        akm()
+            .args([
+                "run",
+                "--only",
+                &name_c,
+                "--no-redact",
+                "--",
+                "/bin/sh",
+                "-c",
+                "sleep 2",
+            ])
+            .output()
+            .unwrap()
+    });
 
-    let out = akm().args(["audit", "--json", "--limit", "20"]).output().unwrap();
+    // Give the started entry time to land.
+    thread::sleep(Duration::from_millis(500));
+
+    let out = akm()
+        .args(["audit", "--json", "--limit", "50"])
+        .output()
+        .unwrap();
     let body = String::from_utf8_lossy(&out.stdout);
     assert!(
         body.contains("\"status\":\"started\""),
-        "audit log should contain a started entry, got: {}",
+        "started entry must appear while child is alive, got: {}",
         body
     );
+
+    let result = handle.join().expect("run thread joined");
+    assert!(result.status.success(), "run should succeed");
+
+    // After completion, both started and ok entries must be present and
+    // share a run_id.
+    let out = akm()
+        .args(["audit", "--json", "--limit", "50"])
+        .output()
+        .unwrap();
+    let body = String::from_utf8_lossy(&out.stdout);
+    assert!(body.contains("\"status\":\"started\""));
+    assert!(body.contains("\"status\":\"ok\""));
     cleanup(&name);
 }
 
-/// Fix #8: redactor handles prefix collision (longer secret beats shorter prefix).
-/// We test through the integration boundary by storing two related secrets.
+/// Fix #8: redactor handles prefix collision (longer secret beats shorter
+/// prefix). Tightened per Codex #9: also assert command success AND that the
+/// redaction token appears (empty stdout would otherwise satisfy "not contains
+/// long_val").
 #[test]
 fn run_redacts_longer_matching_secret() {
     let short = unique_key("SHORT_PFX");
     let long = unique_key("LONG_PFX");
-    // Make the long string start with the short string so they collide.
     let short_val = "prefix-collision-test-xx".to_string();
     let long_val = format!("{}-more-bytes", short_val);
 
@@ -336,10 +368,18 @@ fn run_redacts_longer_matching_secret() {
         ])
         .output()
         .unwrap();
+
+    assert!(out.status.success(), "run should succeed");
     let body = String::from_utf8_lossy(&out.stdout);
     assert!(
         !body.contains(&long_val),
-        "long value should be redacted, got: {}",
+        "long value should be redacted, got: {:?}",
+        body
+    );
+    assert!(
+        body.contains(&format!("[REDACTED:{}]", long)),
+        "expected [REDACTED:{}] in output, got: {:?}",
+        long,
         body
     );
 

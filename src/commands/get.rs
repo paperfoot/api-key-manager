@@ -5,7 +5,7 @@ use std::io::IsTerminal;
 use crate::audit;
 use crate::cli::Global;
 use crate::envelope;
-use crate::error::{AkmError, Result};
+use crate::error::Result;
 use crate::exit;
 use crate::keychain;
 
@@ -19,14 +19,9 @@ pub struct Args {
 }
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
-    keychain::validate_name(&args.name).map_err(|e| AkmError::BadInput(e.to_string()))?;
-
-    let value = match keychain::get(&args.name) {
-        Ok(v) => v,
-        Err(_) => {
-            return Err(AkmError::NotFound(format!("key '{}' not found", args.name)));
-        }
-    };
+    // Status-aware getter — propagates BadInput / NotFound / Internal so the
+    // top-level error mapping returns the right exit code.
+    let value = keychain::get_with_status(&args.name)?;
 
     let mut entry = audit::entry_base(if args.raw { "get-raw" } else { "get" }, "ok");
     entry.keys = vec![args.name.clone()];

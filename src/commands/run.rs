@@ -45,7 +45,6 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     let names = if args.all {
         keychain::list_names().map_err(AkmError::Internal)?
     } else {
-        // Validate each --only name (catches "FOO=BAR" attempts).
         for n in &args.only {
             keychain::validate_name(n).map_err(|e| AkmError::BadInput(e.to_string()))?;
         }
@@ -58,14 +57,16 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
 
     let mut pairs: Vec<(String, String)> = Vec::with_capacity(names.len());
     for name in &names {
-        let v = keychain::get(name).map_err(AkmError::Internal)?;
+        // Use status-aware getter: surface `not_found` distinctly from real
+        // keychain errors.
+        let v = keychain::get_with_status(name)?;
         pairs.push((name.clone(), v));
     }
 
-    // Write a `started` audit entry BEFORE handoff so we have a record even if
-    // the child is long-lived or SIGKILLed before completion.
+    let run_id = audit::new_run_id();
     {
         let mut entry = audit::entry_base("run", "started");
+        entry.run_id = Some(run_id.clone());
         entry.keys = names.clone();
         entry.child_command = Some(args.command[0].clone());
         entry.injected_keys = Some(names.clone());
@@ -96,6 +97,7 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     };
 
     let mut entry = audit::entry_base("run", if code == 0 { "ok" } else { "child_nonzero" });
+    entry.run_id = Some(run_id);
     entry.keys = names.clone();
     entry.child_command = Some(args.command[0].clone());
     entry.injected_keys = Some(names);
@@ -105,8 +107,6 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
         }
     }
 
-    // Emit the status envelope on STDERR, never stdout — the child owns
-    // stdout and our envelope would corrupt machine-consumed pipelines.
     let json_mode = global.json || !std::io::stdout().is_terminal();
     if json_mode && !global.quiet {
         let envelope =

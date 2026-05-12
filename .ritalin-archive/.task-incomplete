@@ -1,0 +1,1 @@
+ritalin: gate blocked — Obligation O-003 (All integration tests pass) lacks passing evidence: passing evidence exists, but the workspace changed since it was recorded. Run: `ritalin prove O-003` (or fix the proof and re-run).

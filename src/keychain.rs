@@ -3,8 +3,13 @@ use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
 };
 
+use crate::error::AkmError;
+
 /// Service prefix used for every keychain entry written by akm.
 pub const SERVICE: &str = "com.paperfoot.akm";
+
+/// macOS Security framework status code for "item not found".
+const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
 pub fn set(name: &str, value: &str) -> Result<()> {
     validate_name(name)?;
@@ -12,11 +17,45 @@ pub fn set(name: &str, value: &str) -> Result<()> {
         .with_context(|| format!("failed to set keychain entry '{}'", name))
 }
 
-pub fn get(name: &str) -> Result<String> {
-    validate_name(name)?;
-    let bytes = get_generic_password(SERVICE, name)
-        .with_context(|| format!("keychain entry '{}' not found", name))?;
-    String::from_utf8(bytes).map_err(|_| anyhow!("keychain entry '{}' is not valid UTF-8", name))
+/// Fetch a keychain value, distinguishing "not found" from real keychain /
+/// UTF-8 failures so the CLI can map them to the right exit code.
+pub fn get_with_status(name: &str) -> std::result::Result<String, AkmError> {
+    validate_name(name).map_err(|e| AkmError::BadInput(e.to_string()))?;
+    let bytes = match get_generic_password(SERVICE, name) {
+        Ok(b) => b,
+        Err(e) => {
+            if e.code() == ERR_SEC_ITEM_NOT_FOUND {
+                return Err(AkmError::NotFound(format!("key '{}' not found", name)));
+            }
+            return Err(AkmError::Internal(anyhow!(
+                "keychain read failed for '{}': {}",
+                name,
+                e
+            )));
+        }
+    };
+    String::from_utf8(bytes)
+        .map_err(|_| AkmError::Internal(anyhow!("keychain entry '{}' is not valid UTF-8", name)))
+}
+
+/// Check whether a key exists, distinguishing "not found" (Ok(false)) from a
+/// real read failure (Err).
+pub fn exists(name: &str) -> std::result::Result<bool, AkmError> {
+    validate_name(name).map_err(|e| AkmError::BadInput(e.to_string()))?;
+    match get_generic_password(SERVICE, name) {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            if e.code() == ERR_SEC_ITEM_NOT_FOUND {
+                Ok(false)
+            } else {
+                Err(AkmError::Internal(anyhow!(
+                    "keychain read failed for '{}': {}",
+                    name,
+                    e
+                )))
+            }
+        }
+    }
 }
 
 pub fn remove(name: &str) -> Result<()> {
@@ -101,11 +140,7 @@ fn unquote_security_field(s: &str) -> Option<String> {
 /// Validate a key name.
 ///
 /// Names must match `[A-Z_][A-Z0-9_]*` (POSIX-compatible env-var name shape).
-/// This rules out names that would break downstream consumers:
-/// - `FOO=BAR` (poisons `cmd.env()` / Fly's `NAME=VALUE` stdin format)
-/// - empty / NUL-containing names
-/// - names starting with a digit (illegal env var in most shells)
-/// - lowercase-only names (sometimes hide capitalization mistakes)
+/// Rules out `FOO=BAR`-style names, lowercase, leading digits, empty, NUL.
 pub fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(anyhow!("key name cannot be empty"));

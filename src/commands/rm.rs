@@ -16,9 +16,9 @@ pub struct Args {
 }
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
-    keychain::validate_name(&args.name).map_err(|e| AkmError::BadInput(e.to_string()))?;
-
-    let existed = keychain::get(&args.name).is_ok();
+    // Use exists() so we distinguish "not present" (noop) from a real keychain
+    // read failure (Internal).
+    let existed = keychain::exists(&args.name)?;
     if existed {
         keychain::remove(&args.name).map_err(AkmError::Internal)?;
     }
