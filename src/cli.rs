@@ -49,6 +49,10 @@ pub enum Cmd {
     Stdin(commands::stdin_cmd::Args),
     /// List stored key names.
     List(commands::list::Args),
+    /// Export raw key values for backup or migration. Audit-logged.
+    Export(commands::export::Args),
+    /// Import keys from a .env-style file or stdin.
+    Import(commands::import_cmd::Args),
     /// Remove a key.
     Rm(commands::rm::Args),
     /// Print the audit log.
@@ -70,6 +74,8 @@ pub fn run() -> u8 {
         Cmd::Run(args) => commands::run::run(args, &global),
         Cmd::Stdin(args) => commands::stdin_cmd::run(args, &global),
         Cmd::List(args) => commands::list::run(args, &global),
+        Cmd::Export(args) => commands::export::run(args, &global),
+        Cmd::Import(args) => commands::import_cmd::run(args, &global),
         Cmd::Rm(args) => commands::rm::run(args, &global),
         Cmd::Audit(args) => commands::audit_cmd::run(args, &global),
         Cmd::Guard(args) => commands::guard::run(args, &global),

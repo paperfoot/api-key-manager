@@ -23,7 +23,7 @@ impl Redactor {
             .filter(|(t, _)| t.len() >= 8)
             .collect();
         // Sort by descending length so longer secrets take priority.
-        secrets.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        secrets.sort_by_key(|(t, _)| std::cmp::Reverse(t.len()));
         let max_secret_len = secrets.iter().map(|(t, _)| t.len()).max().unwrap_or(0);
         Self {
             secrets,

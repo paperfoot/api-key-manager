@@ -27,7 +27,7 @@ pub struct Args {
     pub no_redact: bool,
 
     /// The command to run (and its args) after `--`.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, last = true, required = true)]
+    #[arg(allow_hyphen_values = true, last = true, required = true)]
     pub command: Vec<String>,
 }
 

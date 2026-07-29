@@ -51,7 +51,22 @@ pub fn run(_args: Args, _global: &Global) -> Result<u8> {
                 "redacts_child_output": true,
                 "use_when": "the upstream tool reads the secret from standard input (e.g. `vercel env add`, `gh secret set` without --body, `flyctl secrets import` with NAME=VALUE format)"
             },
-            "list": { "flags": ["--json"] },
+            "list": {
+                "flags": ["--long", "--json"],
+                "long_shows": "last-updated timestamp and age per key (from the audit log); keys older than 90 days are marked stale (display only, nothing is blocked)"
+            },
+            "export": {
+                "flags": ["--only KEY,KEY", "--format env|json"],
+                "default": "json envelope with raw values; env = shell-safe NAME=value lines",
+                "use_when": "the user asks to back up, migrate, or bulk-retrieve keys; every export is audit-logged",
+                "audited": true
+            },
+            "import": {
+                "args": ["[file|-]"],
+                "flags": ["--dry-run", "--json"],
+                "stdin": "dotenv content if no file",
+                "use_when": "migrating an existing .env (or `env` output) into the keychain; skips invalid names with reasons"
+            },
             "rm":   { "args": ["name"], "flags": ["--json"] },
             "audit":{ "flags": ["--limit N", "--json"], "log_path": "$HOME/.akm/audit.log", "log_mode": "0600" },
             "guard":{ "subcommands": ["install", "uninstall", "scan"], "scans": "staged blobs (git show :PATH)" },

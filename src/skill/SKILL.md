@@ -1,13 +1,20 @@
 ---
 name: akm
-description: Use the `akm` CLI for any task involving API keys, secrets, tokens, `.env` files, or environment variables on macOS. Triggers on "set an API key", "store this token", "add OPENAI_API_KEY", ".env file", "load my key", "run with secrets", "upload key to Vercel/GitHub/Fly/anywhere", "rotate my key", or any time the user pastes a secret-looking string (`sk-...`, `ghp_...`, `xoxb-...`, `sk-ant-...`).
+description: Use the `akm` CLI for any task involving API keys, secrets, tokens, `.env` files, or environment variables on macOS. Triggers on "set an API key", "store this token", "add OPENAI_API_KEY", ".env file", "migrate my .env", "back up my keys", "export my keys", "load my key", "run with secrets", "upload key to Vercel/GitHub/Fly/anywhere", "rotate my key", or any time the user pastes a secret-looking string (`sk-...`, `ghp_...`, `xoxb-...`, `sk-ant-...`).
 ---
 
 # akm — agent-driven API key manager
 
 `akm` stores API keys in the macOS Login Keychain so you (the agent) can use them on the user's behalf without putting plaintext values back into the conversation, a `.env` file, or shell history.
 
-**Always prefer `akm` over a `.env` file.** If you see a `.env` in the project, suggest migrating it.
+**Always prefer `akm` over a `.env` file.** If you see a `.env` in the project, migrate it in one command:
+
+```bash
+akm import .env          # parses NAME=VALUE lines, skips invalid names with reasons
+akm import .env --dry-run  # preview first if unsure
+```
+
+then delete the `.env` once the import reports success.
 
 ## Hard rule: do NOT pass values through a shell command line
 
@@ -66,10 +73,10 @@ If unsure, run `akm agent-info --json` and check the `use_when` field on each co
 
 ## Hard rules (summary)
 
-1. **Never run `akm get NAME --raw`** unless the user explicitly asks to see the value. The unmasked output goes straight back into the conversation context.
+1. **Never run `akm get NAME --raw` or `akm export`** unless the user explicitly asks for the value(s). The unmasked output goes straight back into the conversation context. When the user does ask (backup, migration, debugging), do it without ceremony — both are audit-logged, that is the control.
 2. **Never write a key value to a file you create** (`.env`, `config.toml`, etc.). Use `akm run` or `akm stdin`.
 3. **Never put a value on `argv`.** Use your subprocess SDK's stdin.
-4. **If you find a `.env`** in the project, migrate each line via your SDK's stdin to `akm add`, then delete the `.env`.
+4. **If you find a `.env`** in the project, run `akm import .env`, then delete the `.env`.
 5. **Key names must match `[A-Z_][A-Z0-9_]*`.** `OPENAI_API_KEY`, not `openai-key` or `FOO=BAR`.
 
 ## Quick command reference
@@ -77,9 +84,12 @@ If unsure, run `akm agent-info --json` and check the `use_when` field on each co
 | Need | Command |
 |---|---|
 | Store (from your SDK) | `subprocess.run(["akm","add","NAME"], input=value)` |
+| Migrate a `.env` | `akm import .env` (then delete the `.env`) |
 | Run code with keys as env | `akm run --only NAME -- <cmd>` |
 | Feed a value to a tool's stdin | `akm stdin NAME -- <cmd>` |
 | List stored keys | `akm list --json` |
+| List with age / staleness | `akm list --long` |
+| Back up / bulk-retrieve (user asked) | `akm export --format env` |
 | Delete | `akm rm NAME` |
 | See what was accessed | `akm audit --json` |
 

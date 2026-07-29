@@ -434,3 +434,89 @@ fn run_redacts_longer_matching_secret() {
     cleanup(&short);
     cleanup(&long);
 }
+
+// ----- v0.2.0: export / import / list --long -----
+
+#[test]
+fn export_json_and_env_formats() {
+    let name = unique_key("EXPORT");
+    let value = "sk-test-export-value-1234567890";
+
+    akm().args(["add", &name]).write_stdin(value).assert().success();
+
+    let out = akm().args(["export", "--only", &name]).output().unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains(&format!("\"{}\":\"{}\"", name, value)), "json export carries raw value: {s}");
+
+    let out = akm()
+        .args(["export", "--only", &name, "--format", "env"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(s.trim(), format!("{}={}", name, value));
+
+    cleanup(&name);
+}
+
+#[test]
+fn export_missing_key_maps_to_not_found() {
+    let name = unique_key("EXPORT_MISSING");
+    let out = akm().args(["export", "--only", &name]).output().unwrap();
+    assert_eq!(out.status.code(), Some(6), "not_found exit code");
+}
+
+#[test]
+fn import_dotenv_roundtrip_and_skips() {
+    let name = unique_key("IMPORT");
+    let dotenv = format!(
+        "# comment\nexport {}=\"imported-value-123\"\nlowercase=nope\nBROKENLINE\n",
+        name
+    );
+
+    let out = akm()
+        .args(["import", "-"])
+        .write_stdin(dotenv.clone())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("\"count\":1"), "one key stored: {s}");
+    assert!(s.contains("\"skipped\""), "skips reported: {s}");
+
+    let out = akm().args(["get", &name, "--raw"]).output().unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("imported-value-123"), "value roundtrips: {s}");
+
+    // dry-run must not write
+    let name2 = unique_key("IMPORT_DRY");
+    akm()
+        .args(["import", "-", "--dry-run"])
+        .write_stdin(format!("{}=would-be-stored", name2))
+        .assert()
+        .success();
+    let out = akm().args(["get", &name2]).output().unwrap();
+    assert_eq!(out.status.code(), Some(6), "dry-run stored nothing");
+
+    cleanup(&name);
+}
+
+#[test]
+fn list_long_reports_age() {
+    let name = unique_key("LISTLONG");
+    akm().args(["add", &name]).write_stdin("list-long-value-123").assert().success();
+
+    let out = akm().args(["list", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("\"entries\""), "entries present: {s}");
+    assert!(
+        s.contains(&format!("\"name\":\"{}\"", name)),
+        "new key listed with metadata: {s}"
+    );
+    assert!(s.contains("\"age_days\":0"), "fresh key has age 0: {s}");
+
+    cleanup(&name);
+}

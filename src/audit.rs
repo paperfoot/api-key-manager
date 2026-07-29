@@ -96,6 +96,39 @@ pub fn now() -> String {
     Utc::now().to_rfc3339()
 }
 
+/// Map each key name to the timestamp of the last successful write (`add` or
+/// `import`) recorded in the audit log. Lines are chronological, so a later
+/// entry simply overwrites. Best-effort: a missing or partially corrupt log
+/// yields an empty/partial map, never an error — this feeds display metadata
+/// (key age for rotation hygiene), not access control.
+pub fn last_set_map() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let Ok(content) = std::fs::read_to_string(log_path()) else {
+        return map;
+    };
+    for line in content.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let cmd = v.get("command").and_then(|c| c.as_str()).unwrap_or("");
+        if cmd != "add" && cmd != "import" {
+            continue;
+        }
+        if v.get("status").and_then(|s| s.as_str()) != Some("ok") {
+            continue;
+        }
+        let Some(ts) = v.get("ts").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        if let Some(keys) = v.get("keys").and_then(|k| k.as_array()) {
+            for k in keys.iter().filter_map(|k| k.as_str()) {
+                map.insert(k.to_string(), ts.to_string());
+            }
+        }
+    }
+    map
+}
+
 pub fn ppid() -> i32 {
     // SAFETY: getppid is always safe.
     unsafe { libc::getppid() }
