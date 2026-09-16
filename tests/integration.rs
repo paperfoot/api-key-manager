@@ -67,7 +67,10 @@ fn add_get_rm_roundtrip() {
 
     let out = akm().args(["get", &name]).output().unwrap();
     let body = String::from_utf8_lossy(&out.stdout);
-    assert!(!body.contains(value), "masked get must not contain raw value");
+    assert!(
+        !body.contains(value),
+        "masked get must not contain raw value"
+    );
 
     akm().args(["rm", &name]).assert().success();
 
@@ -294,7 +297,11 @@ fn add_rejects_invalid_name() {
         .write_stdin("any-value-12345678")
         .output()
         .unwrap();
-    assert_eq!(out.status.code().unwrap(), 3, "FOO=BAR should be bad_input (3)");
+    assert_eq!(
+        out.status.code().unwrap(),
+        3,
+        "FOO=BAR should be bad_input (3)"
+    );
 }
 
 #[test]
@@ -401,8 +408,16 @@ fn run_redacts_longer_matching_secret() {
     let short_val = "prefix-collision-test-xx".to_string();
     let long_val = format!("{}-more-bytes", short_val);
 
-    akm().args(["add", &short]).write_stdin(short_val.clone()).assert().success();
-    akm().args(["add", &long]).write_stdin(long_val.clone()).assert().success();
+    akm()
+        .args(["add", &short])
+        .write_stdin(short_val.clone())
+        .assert()
+        .success();
+    akm()
+        .args(["add", &long])
+        .write_stdin(long_val.clone())
+        .assert()
+        .success();
 
     let out = akm()
         .args([
@@ -442,12 +457,19 @@ fn export_json_and_env_formats() {
     let name = unique_key("EXPORT");
     let value = "sk-test-export-value-1234567890";
 
-    akm().args(["add", &name]).write_stdin(value).assert().success();
+    akm()
+        .args(["add", &name])
+        .write_stdin(value)
+        .assert()
+        .success();
 
     let out = akm().args(["export", "--only", &name]).output().unwrap();
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains(&format!("\"{}\":\"{}\"", name, value)), "json export carries raw value: {s}");
+    assert!(
+        s.contains(&format!("\"{}\":\"{}\"", name, value)),
+        "json export carries raw value: {s}"
+    );
 
     let out = akm()
         .args(["export", "--only", &name, "--format", "env"])
@@ -506,7 +528,11 @@ fn import_dotenv_roundtrip_and_skips() {
 #[test]
 fn list_long_reports_age() {
     let name = unique_key("LISTLONG");
-    akm().args(["add", &name]).write_stdin("list-long-value-123").assert().success();
+    akm()
+        .args(["add", &name])
+        .write_stdin("list-long-value-123")
+        .assert()
+        .success();
 
     let out = akm().args(["list", "--json"]).output().unwrap();
     assert!(out.status.success());

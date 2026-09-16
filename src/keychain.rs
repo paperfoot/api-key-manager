@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
@@ -12,10 +12,16 @@ pub const SERVICE: &str = "com.paperfoot.akm";
 /// macOS Security framework status code for "item not found".
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
-pub fn set(name: &str, value: &str) -> Result<()> {
-    validate_name(name)?;
-    set_generic_password(SERVICE, name, value.as_bytes())
-        .with_context(|| format!("failed to set keychain entry '{}'", name))
+fn access_error(operation: &str, error: security_framework::base::Error) -> AkmError {
+    AkmError::KeychainUnavailable(format!(
+        "Keychain {operation} failed (macOS status {}): {error}",
+        error.code()
+    ))
+}
+
+pub fn set(name: &str, value: &str) -> std::result::Result<(), AkmError> {
+    validate_name(name).map_err(|e| AkmError::BadInput(e.to_string()))?;
+    set_generic_password(SERVICE, name, value.as_bytes()).map_err(|e| access_error("write", e))
 }
 
 /// Fetch a keychain value, distinguishing "not found" from real keychain /
@@ -28,11 +34,7 @@ pub fn get_with_status(name: &str) -> std::result::Result<String, AkmError> {
             if e.code() == ERR_SEC_ITEM_NOT_FOUND {
                 return Err(AkmError::NotFound(format!("key '{}' not found", name)));
             }
-            return Err(AkmError::Internal(anyhow!(
-                "keychain read failed for '{}': {}",
-                name,
-                e
-            )));
+            return Err(access_error("read", e));
         }
     };
     String::from_utf8(bytes)
@@ -49,20 +51,15 @@ pub fn exists(name: &str) -> std::result::Result<bool, AkmError> {
             if e.code() == ERR_SEC_ITEM_NOT_FOUND {
                 Ok(false)
             } else {
-                Err(AkmError::Internal(anyhow!(
-                    "keychain read failed for '{}': {}",
-                    name,
-                    e
-                )))
+                Err(access_error("read", e))
             }
         }
     }
 }
 
-pub fn remove(name: &str) -> Result<()> {
-    validate_name(name)?;
-    delete_generic_password(SERVICE, name)
-        .with_context(|| format!("failed to delete keychain entry '{}'", name))
+pub fn remove(name: &str) -> std::result::Result<(), AkmError> {
+    validate_name(name).map_err(|e| AkmError::BadInput(e.to_string()))?;
+    delete_generic_password(SERVICE, name).map_err(|e| access_error("delete", e))
 }
 
 /// Enumerate all akm-owned keychain entries via SecItemCopyMatching, NOT by
@@ -70,7 +67,7 @@ pub fn remove(name: &str) -> Result<()> {
 /// ItemSearchOptions which talks to the Security API directly. Result is
 /// reflected immediately under concurrent writes, so integration tests no
 /// longer need single-threaded execution.
-pub fn list_names() -> Result<Vec<String>> {
+pub fn list_names() -> std::result::Result<Vec<String>, AkmError> {
     let mut opts = ItemSearchOptions::new();
     opts.class(ItemClass::generic_password())
         .service(SERVICE)
@@ -83,7 +80,7 @@ pub fn list_names() -> Result<Vec<String>> {
             if e.code() == ERR_SEC_ITEM_NOT_FOUND {
                 return Ok(Vec::new());
             }
-            return Err(anyhow!("keychain enumeration failed: {}", e));
+            return Err(access_error("enumeration", e));
         }
     };
 

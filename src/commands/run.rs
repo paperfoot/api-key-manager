@@ -1,18 +1,14 @@
 use clap::Args as ClapArgs;
-use std::io::IsTerminal;
-use std::os::unix::process::ExitStatusExt;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use crate::audit;
 use crate::cli::Global;
 use crate::error::{AkmError, Result};
-use crate::exit;
 use crate::keychain;
-use crate::redact::Redactor;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Comma-separated list of keys to inject.
+    /// Keys to inject, comma-separated. Use ENV=STORED_KEY to rename in the child.
     #[arg(long, value_delimiter = ',')]
     pub only: Vec<String>,
 
@@ -20,9 +16,7 @@ pub struct Args {
     #[arg(long, conflicts_with = "only")]
     pub all: bool,
 
-    /// Disable child stdout/stderr redaction. Off-by-default redaction
-    /// strips injected values from the child's output before they reach the
-    /// agent's transcript.
+    /// Disable the default child stdout/stderr redaction.
     #[arg(long)]
     pub no_redact: bool,
 
@@ -42,25 +36,22 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
         ));
     }
 
-    let names = if args.all {
-        keychain::list_names().map_err(AkmError::Internal)?
+    let mappings = if args.all {
+        keychain::list_names()?
+            .into_iter()
+            .map(|name| (name.clone(), name))
+            .collect()
     } else {
-        for n in &args.only {
-            keychain::validate_name(n).map_err(|e| AkmError::BadInput(e.to_string()))?;
-        }
-        args.only.clone()
+        mappings(&args.only)?
     };
-
-    if names.is_empty() {
+    if mappings.is_empty() {
         return Err(AkmError::BadInput("no keys to inject".into()));
     }
-
-    let mut pairs: Vec<(String, String)> = Vec::with_capacity(names.len());
-    for name in &names {
-        // Use status-aware getter: surface `not_found` distinctly from real
-        // keychain errors.
-        let v = keychain::get_with_status(name)?;
-        pairs.push((name.clone(), v));
+    let names: Vec<String> = mappings.iter().map(|(_, source)| source.clone()).collect();
+    let mut pairs = Vec::with_capacity(mappings.len());
+    for (target, source) in &mappings {
+        let value = keychain::get_with_status(source)?;
+        pairs.push((target.clone(), value));
     }
 
     let run_id = audit::new_run_id();
@@ -69,7 +60,7 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
         entry.run_id = Some(run_id.clone());
         entry.keys = names.clone();
         entry.child_command = Some(args.command[0].clone());
-        entry.injected_keys = Some(names.clone());
+        entry.injected_keys = Some(mappings.iter().map(|(target, _)| target.clone()).collect());
         if let Err(e) = audit::append(&entry) {
             if !global.quiet {
                 eprintln!("akm: warning: audit log write failed: {}", e);
@@ -89,66 +80,65 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
         .map(|(k, v)| (v.clone(), format!("[REDACTED:{}]", k)))
         .collect();
 
-    let code = if redact {
-        run_with_redaction(&mut cmd, secret_pairs)?
-    } else {
-        let status = cmd.status().map_err(AkmError::from)?;
-        status_to_code(status)
-    };
+    let result = crate::child::run(&mut cmd, None, secret_pairs, redact);
+    let code = result.as_ref().copied().unwrap_or(1);
 
-    let mut entry = audit::entry_base("run", if code == 0 { "ok" } else { "child_nonzero" });
+    let mut entry = audit::entry_base(
+        "run",
+        if result.is_err() {
+            "error"
+        } else if code == 0 {
+            "ok"
+        } else {
+            "child_nonzero"
+        },
+    );
     entry.run_id = Some(run_id);
     entry.keys = names.clone();
     entry.child_command = Some(args.command[0].clone());
-    entry.injected_keys = Some(names);
+    entry.injected_keys = Some(mappings.iter().map(|(target, _)| target.clone()).collect());
     if let Err(e) = audit::append(&entry) {
         if !global.quiet {
             eprintln!("akm: warning: audit log write failed: {}", e);
         }
     }
 
-    let json_mode = global.json || !std::io::stdout().is_terminal();
-    if json_mode && !global.quiet {
-        let envelope =
-            crate::envelope::ok(serde_json::json!({ "exit_code": code, "command": "run" }));
-        eprintln!("{}", envelope);
-    }
+    let code = result?;
+    report_exit("run", code, global);
     Ok(code)
 }
 
-fn run_with_redaction(cmd: &mut Command, secrets: Vec<(String, String)>) -> Result<u8> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(AkmError::from)?;
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let secrets_a = secrets.clone();
-    let secrets_b = secrets;
-
-    let out_handle = std::thread::spawn(move || {
-        if let Some(mut s) = stdout {
-            let r = Redactor::new(secrets_a);
-            let _ = r.copy(&mut s, std::io::stdout());
+pub fn report_exit(command: &str, code: u8, global: &Global) {
+    // Wrappers are transparent unless completion metadata is explicitly asked
+    // for. Never append an AKM success report to a failed child's output.
+    if global.json {
+        if code == 0 {
+            eprintln!(
+                "{}",
+                crate::envelope::ok(serde_json::json!({"exit_code": code, "command": command}))
+            );
+        } else {
+            eprintln!("{}", crate::envelope::err("child_failed", format!("{command} child exited with code {code}"), Some("Inspect the child diagnostic; do not repeat a write unless its outcome is known.")));
         }
-    });
-    let err_handle = std::thread::spawn(move || {
-        if let Some(mut s) = stderr {
-            let r = Redactor::new(secrets_b);
-            let _ = r.copy(&mut s, std::io::stderr());
-        }
-    });
-
-    let status = child.wait().map_err(AkmError::from)?;
-    let _ = out_handle.join();
-    let _ = err_handle.join();
-    Ok(status_to_code(status))
+    }
 }
 
-fn status_to_code(s: std::process::ExitStatus) -> u8 {
-    if let Some(code) = s.code() {
-        (code & 0xff) as u8
-    } else if let Some(sig) = s.signal() {
-        (128u32.saturating_add(sig as u32) & 0xff) as u8
-    } else {
-        exit::TRANSIENT
+fn mappings(specs: &[String]) -> Result<Vec<(String, String)>> {
+    let mut mappings = Vec::new();
+    for spec in specs {
+        let (target, source) = spec.split_once('=').unwrap_or((spec, spec));
+        for name in [target, source] {
+            keychain::validate_name(name).map_err(|e| AkmError::BadInput(e.to_string()))?;
+        }
+        if let Some((_, previous)) = mappings.iter().find(|(name, _)| name == target) {
+            if previous != source {
+                return Err(AkmError::BadInput(format!(
+                    "duplicate destination '{target}' in --only"
+                )));
+            }
+            continue;
+        }
+        mappings.push((target.to_string(), source.to_string()));
     }
+    Ok(mappings)
 }

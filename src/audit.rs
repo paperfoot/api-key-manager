@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde::Serialize;
-use std::fs::{create_dir_all, OpenOptions};
-use std::io::Write;
+use std::fs::{create_dir_all, File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
@@ -103,11 +103,14 @@ pub fn now() -> String {
 /// (key age for rotation hygiene), not access control.
 pub fn last_set_map() -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
-    let Ok(content) = std::fs::read_to_string(log_path()) else {
+    let Ok(file) = File::open(log_path()) else {
         return map;
     };
-    for line in content.lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
         let cmd = v.get("command").and_then(|c| c.as_str()).unwrap_or("");

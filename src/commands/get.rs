@@ -31,7 +31,11 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
         }
     }
 
-    let display = if args.raw { value.clone() } else { mask(&value) };
+    let display = if args.raw {
+        value.clone()
+    } else {
+        mask(&value)
+    };
     let json_mode = global.json || !std::io::stdout().is_terminal();
     if json_mode {
         println!(

@@ -6,7 +6,7 @@ use std::io::IsTerminal;
 use crate::audit;
 use crate::cli::Global;
 use crate::envelope;
-use crate::error::{AkmError, Result};
+use crate::error::Result;
 use crate::exit;
 use crate::keychain;
 
@@ -19,10 +19,20 @@ pub struct Args {
     /// Show last-updated timestamp and age per key (from the audit log).
     #[arg(long)]
     pub long: bool,
+
+    /// Print one key name per line, without JSON or metadata.
+    #[arg(long, conflicts_with = "long")]
+    pub names_only: bool,
 }
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
-    let names = keychain::list_names().map_err(AkmError::Internal)?;
+    let names = keychain::list_names()?;
+    if args.names_only {
+        for name in names {
+            println!("{name}");
+        }
+        return Ok(exit::SUCCESS);
+    }
     let json_mode = global.json || !std::io::stdout().is_terminal();
 
     let last_set = if args.long || json_mode {

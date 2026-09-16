@@ -15,6 +15,9 @@ pub enum AkmError {
     #[error("{0}")]
     NotFound(String),
 
+    #[error("{0}")]
+    KeychainUnavailable(String),
+
     /// Anything else — IO, FFI, upstream process. Maps to exit 1 / `transient`
     /// since these are typically retriable or environment-dependent.
     #[error("{0}")]
@@ -26,7 +29,16 @@ impl AkmError {
         match self {
             AkmError::BadInput(_) => exit::BAD_INPUT,
             AkmError::NotFound(_) => exit::NOT_FOUND,
-            AkmError::Internal(_) => exit::TRANSIENT,
+            AkmError::Internal(_) | AkmError::KeychainUnavailable(_) => exit::TRANSIENT,
+        }
+    }
+
+    pub fn suggestion(&self) -> &'static str {
+        match self {
+            Self::BadInput(_) => "Use `akm <command> --help` or `akm agent-info --command <command>` for accepted arguments.",
+            Self::NotFound(_) => "Use `akm list` to find the stored name, or supply the value to `akm add NAME` through stdin.",
+            Self::KeychainUnavailable(_) => "Open Keychain Access and check that your existing login Keychain is available and unlocked. Keep HOME set to your macOS account home; do not reset the Keychain.",
+            Self::Internal(_) => "Check the named resource, executable, or macOS Keychain access. Check the operation outcome before retrying a write.",
         }
     }
 
@@ -34,6 +46,7 @@ impl AkmError {
         match self {
             AkmError::BadInput(_) => "bad_input",
             AkmError::NotFound(_) => "not_found",
+            AkmError::KeychainUnavailable(_) => "keychain_unavailable",
             AkmError::Internal(_) => "internal_error",
         }
     }

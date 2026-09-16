@@ -1,4 +1,5 @@
 use clap::{Args as ClapArgs, Parser, Subcommand};
+use std::io::IsTerminal;
 
 use crate::commands;
 use crate::envelope;
@@ -11,12 +12,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(
     name = "akm",
     version = VERSION,
-    about = "Agent-driven macOS Keychain CLI for API keys. Zero human friction.",
-    long_about = "akm stores API keys in the macOS Login Keychain and injects them into child processes \
-                  without writing plaintext to disk, shell history, or process argv. Designed so that AI \
-                  coding agents (Claude Code, Cursor, Codex) can drive the entire workflow with no \
-                  human-in-the-loop prompts.",
-    after_long_help = "Tips:\n  - From an agent, pass key values via the subprocess stdin API (e.g. Python\n    `subprocess.run([\"akm\",\"add\",\"NAME\"], input=value)`). Avoid wrapping the value in a shell command — it lands in shell history.\n  - Use `akm run --only OPENAI_API_KEY -- <cmd>` to scope injection. `--all` injects every stored key (large blast radius).\n  - Use `akm stdin <name> -- vercel env add <name> production --force` to feed the value to any upstream CLI.\n  - Run `akm agent-info --json` for a machine-readable capability manifest.\n  - Install the agent skill: `akm skill install`.\n\nExamples:\n  printf %s \"$VALUE\" | akm add OPENAI_API_KEY\n  akm run --only OPENAI_API_KEY -- python script.py\n  akm stdin OPENAI_API_KEY -- gh secret set OPENAI_API_KEY --repo me/myproj\n  akm list --json | jq '.data.keys[]'"
+    about = "Use macOS Keychain secrets in commands without copying their values.",
+    long_about = "Store API keys in the macOS Login Keychain. Run commands with selected keys as environment variables, or supply a value through stdin. Keychain access is noninteractive; unavailable access returns an error.",
+    after_long_help = "Examples:\n  akm run --only OPENAI_API_KEY -- python script.py\n  akm run --only API_KEY=PROJECT_API_KEY -- node server.js\n  akm stdin OPENAI_API_KEY -- gh secret set OPENAI_API_KEY\n  akm list --names-only\n  akm agent-info --command run\n\nStore values through your subprocess API's stdin: subprocess.run([\"akm\",\"add\",\"NAME\"], input=value).\nInstall the optional agent instructions with `akm skill install`."
 )]
 pub struct Cli {
     #[command(flatten)]
@@ -28,7 +26,7 @@ pub struct Cli {
 
 #[derive(Debug, Clone, Default, ClapArgs)]
 pub struct Global {
-    /// Emit JSON envelope output on stdout (forced on when stdout is piped).
+    /// Emit JSON (automatic when piped); run/stdin completion goes to stderr.
     #[arg(long, global = true)]
     pub json: bool,
 
@@ -48,6 +46,7 @@ pub enum Cmd {
     /// Write a key value to a child process's stdin (replaces push wrappers).
     Stdin(commands::stdin_cmd::Args),
     /// List stored key names.
+    #[command(visible_alias = "ls")]
     List(commands::list::Args),
     /// Export raw key values for backup or migration. Audit-logged.
     Export(commands::export::Args),
@@ -60,6 +59,7 @@ pub enum Cmd {
     /// Manage the optional pre-commit hook that scans staged files for key prefixes.
     Guard(commands::guard::Args),
     /// Print the machine-readable capability manifest.
+    #[command(visible_alias = "info")]
     AgentInfo(commands::agent_info::Args),
     /// Install or update the bundled agent skill (Claude Code, Codex, Gemini).
     #[command(name = "skill")]
@@ -67,7 +67,52 @@ pub enum Cmd {
 }
 
 pub fn run() -> u8 {
-    let Cli { global, command } = Cli::parse();
+    // Only inspect AKM flags before `--`; flags belonging to the child must
+    // never change the wrapper's output format.
+    let json_mode = !std::io::stdout().is_terminal()
+        || std::env::args_os()
+            .skip(1)
+            .take_while(|arg| arg != "--")
+            .any(|arg| arg == "--json");
+    let Cli { global, command } = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                // Keep help/version plain text, as shell and Homebrew callers
+                // have always expected. Discovery is the structured API.
+                print!("{err}");
+                return exit::SUCCESS;
+            }
+            // Parser errors can echo argv (including an accidentally supplied
+            // credential). Return the error category, never that raw input.
+            let message = match err.kind() {
+                clap::error::ErrorKind::UnknownArgument => "unknown argument",
+                clap::error::ErrorKind::InvalidSubcommand => "unknown command",
+                clap::error::ErrorKind::MissingRequiredArgument => "missing required argument",
+                clap::error::ErrorKind::ArgumentConflict => "conflicting arguments",
+                _ => "invalid command arguments",
+            };
+            return report_error(&AkmError::BadInput(message.into()), json_mode);
+        }
+    };
+    // AKM uses existing file-based Login Keychain items. This process-local
+    // switch makes missing/locked Keychains fail instead of opening modal UI.
+    // It does not unlock a Keychain or change permissions on any item.
+    let _keychain_ui =
+        match security_framework::os::macos::keychain::SecKeychain::disable_user_interaction() {
+            Ok(guard) => guard,
+            Err(error) => {
+                return report_error(
+                    &AkmError::KeychainUnavailable(format!(
+                        "cannot disable Keychain dialogs: {error}"
+                    )),
+                    json_mode,
+                )
+            }
+        };
     let result: Result<u8, AkmError> = match command {
         Cmd::Add(args) => commands::add::run(args, &global),
         Cmd::Get(args) => commands::get::run(args, &global),
@@ -84,25 +129,18 @@ pub fn run() -> u8 {
     };
     match result {
         Ok(code) => code,
-        Err(err) => {
-            // For machine consumers we always emit a JSON error envelope on
-            // stdout. For humans (TTY stdout, not --json) we use stderr.
-            let json_mode = global.json || !atty::is(atty::Stream::Stdout);
-            if json_mode {
-                println!(
-                    "{}",
-                    envelope::err(err.code_str(), err.to_string(), None)
-                );
-            } else {
-                eprintln!("akm: {}: {}", err.code_str(), err);
-            }
-            // BAD_INPUT cap defensively to avoid leaking surprising codes.
-            let code = err.exit_code();
-            if code == 0 {
-                exit::TRANSIENT
-            } else {
-                code
-            }
-        }
+        Err(err) => report_error(&err, global.json || !std::io::stdout().is_terminal()),
     }
+}
+
+fn report_error(err: &AkmError, json_mode: bool) -> u8 {
+    if json_mode {
+        eprintln!(
+            "{}",
+            envelope::err(err.code_str(), err.to_string(), Some(err.suggestion()))
+        );
+    } else {
+        eprintln!("akm: {}: {}\n{}", err.code_str(), err, err.suggestion());
+    }
+    err.exit_code()
 }

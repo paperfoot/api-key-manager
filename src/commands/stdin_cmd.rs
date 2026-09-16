@@ -1,16 +1,10 @@
 use clap::Args as ClapArgs;
-use serde_json::json;
-use std::io::{IsTerminal, Write};
-use std::os::unix::process::ExitStatusExt;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use crate::audit;
 use crate::cli::Global;
-use crate::envelope;
 use crate::error::{AkmError, Result};
-use crate::exit;
 use crate::keychain;
-use crate::redact::Redactor;
 
 /// `akm stdin NAME -- <cmd> [args...]`
 ///
@@ -23,6 +17,10 @@ use crate::redact::Redactor;
 pub struct Args {
     /// Key name whose value is written to the child's stdin.
     pub name: String,
+
+    /// Stdin format: raw value (default), or a shell-quoted NAME=value line.
+    #[arg(long, default_value = "raw", value_parser = ["raw", "env"])]
+    pub format: String,
 
     /// Disable child stdout/stderr redaction.
     #[arg(long)]
@@ -56,51 +54,31 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
 
     let mut cmd = Command::new(&args.command[0]);
     cmd.args(&args.command[1..]);
-    cmd.stdin(Stdio::piped());
-    if !args.no_redact {
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    }
-
-    let mut child = cmd.spawn().map_err(AkmError::from)?;
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| AkmError::Internal(anyhow::anyhow!("failed to open child stdin")))?;
-        stdin.write_all(value.as_bytes())?;
-    }
-    drop(child.stdin.take());
-
-    let code = if args.no_redact {
-        let status = child.wait().map_err(AkmError::from)?;
-        status_to_code(status)
+    let input = if args.format == "env" {
+        format!("{}={}\n", args.name, super::export::shell_quote(&value))
     } else {
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        let secrets = vec![(value.clone(), format!("[REDACTED:{}]", args.name))];
-        let secrets_a = secrets.clone();
-        let secrets_b = secrets;
-
-        let out_handle = std::thread::spawn(move || {
-            if let Some(mut s) = stdout {
-                let r = Redactor::new(secrets_a);
-                let _ = r.copy(&mut s, std::io::stdout());
-            }
-        });
-        let err_handle = std::thread::spawn(move || {
-            if let Some(mut s) = stderr {
-                let r = Redactor::new(secrets_b);
-                let _ = r.copy(&mut s, std::io::stderr());
-            }
-        });
-
-        let status = child.wait().map_err(AkmError::from)?;
-        let _ = out_handle.join();
-        let _ = err_handle.join();
-        status_to_code(status)
+        value.clone()
     };
+    let mut secrets = vec![(value.clone(), format!("[REDACTED:{}]", args.name))];
+    if args.format == "env" {
+        secrets.push((
+            super::export::shell_quote(&value),
+            format!("[REDACTED:{}]", args.name),
+        ));
+    }
+    let result = crate::child::run(&mut cmd, Some(input.into_bytes()), secrets, !args.no_redact);
+    let code = result.as_ref().copied().unwrap_or(1);
 
-    let mut entry = audit::entry_base("stdin", if code == 0 { "ok" } else { "child_nonzero" });
+    let mut entry = audit::entry_base(
+        "stdin",
+        if result.is_err() {
+            "error"
+        } else if code == 0 {
+            "ok"
+        } else {
+            "child_nonzero"
+        },
+    );
     entry.run_id = Some(run_id);
     entry.keys = vec![args.name.clone()];
     entry.child_command = Some(args.command[0].clone());
@@ -110,20 +88,7 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
         }
     }
 
-    let json_mode = global.json || !std::io::stdout().is_terminal();
-    if json_mode && !global.quiet {
-        let envelope = envelope::ok(json!({ "exit_code": code, "command": "stdin" }));
-        eprintln!("{}", envelope);
-    }
+    let code = result?;
+    super::run::report_exit("stdin", code, global);
     Ok(code)
-}
-
-fn status_to_code(s: std::process::ExitStatus) -> u8 {
-    if let Some(code) = s.code() {
-        (code & 0xff) as u8
-    } else if let Some(sig) = s.signal() {
-        (128u32.saturating_add(sig as u32) & 0xff) as u8
-    } else {
-        exit::TRANSIENT
-    }
 }

@@ -25,6 +25,9 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     keychain::validate_name(&args.name).map_err(|e| AkmError::BadInput(e.to_string()))?;
 
     let (value, input_mode) = read_value(&args)?;
+    if value.contains('\0') {
+        return Err(AkmError::BadInput("value cannot contain NUL bytes".into()));
+    }
     if value.is_empty() {
         return Err(AkmError::BadInput("value cannot be empty".into()));
     }
@@ -57,6 +60,11 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
 
 fn read_value(args: &Args) -> Result<(String, &'static str)> {
     if args.stdin || args.value.is_none() {
+        if std::io::stdin().is_terminal() {
+            return Err(AkmError::BadInput(
+                "provide the value on stdin; akm does not prompt for secrets".into(),
+            ));
+        }
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
         let trimmed = buf.trim_end_matches(['\n', '\r']).to_string();

@@ -22,7 +22,7 @@ pub struct Args {
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
     let names = if args.only.is_empty() {
-        keychain::list_names().map_err(AkmError::Internal)?
+        keychain::list_names()?
     } else {
         for n in &args.only {
             keychain::validate_name(n).map_err(|e| AkmError::BadInput(e.to_string()))?;
@@ -67,7 +67,7 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
 
 /// Quote a value for NAME=value output so the file survives `source` and
 /// dotenv parsers. Values made of safe chars pass through unquoted.
-fn shell_quote(v: &str) -> String {
+pub fn shell_quote(v: &str) -> String {
     let safe = v
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || "_-./:+=@%,".contains(c));

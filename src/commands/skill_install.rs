@@ -20,11 +20,14 @@ pub struct Args {
 pub enum Action {
     /// Install the bundled skill into ~/.claude/skills/akm/SKILL.md (plus codex/gemini).
     Install,
+    /// Report whether each installed skill matches this binary.
+    Status,
 }
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
     match args.action {
         Action::Install => install(global),
+        Action::Status => status(global),
     }
 }
 
@@ -34,15 +37,14 @@ fn install(global: &Global) -> Result<u8> {
         let dir = parent.join("akm");
         create_dir_all(&dir)?;
         let path = dir.join("SKILL.md");
-        write(&path, SKILL_MD)?;
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(SKILL_MD) {
+            write(&path, SKILL_MD)?;
+        }
         installed.push(path.display().to_string());
     }
     let json_mode = global.json || !std::io::stdout().is_terminal();
     if json_mode {
-        println!(
-            "{}",
-            envelope::ok(json!({ "installed": installed }))
-        );
+        println!("{}", envelope::ok(json!({ "installed": installed })));
     } else if !global.quiet {
         for p in &installed {
             eprintln!("akm: installed skill -> {}", p);
@@ -59,4 +61,31 @@ fn skill_dirs() -> Vec<PathBuf> {
         dirs.push(home.join(".gemini").join("skills"));
     }
     dirs
+}
+
+fn status(global: &Global) -> Result<u8> {
+    let entries: Vec<_> = skill_dirs().iter().map(|parent| {
+        let path = parent.join("akm/SKILL.md");
+        let content = std::fs::read_to_string(&path);
+        json!({"path":path, "installed":content.is_ok(), "current":content.as_deref().ok() == Some(SKILL_MD)})
+    }).collect();
+    let current = entries.iter().all(|entry| entry["current"] == true);
+    if global.json || !std::io::stdout().is_terminal() {
+        println!(
+            "{}",
+            envelope::ok(
+                json!({"version":crate::cli::VERSION, "current":current, "skills":entries})
+            )
+        );
+    } else {
+        println!(
+            "{}",
+            if current {
+                "akm skills are current"
+            } else {
+                "Run `akm skill install` to update the installed skills"
+            }
+        );
+    }
+    Ok(exit::SUCCESS)
 }

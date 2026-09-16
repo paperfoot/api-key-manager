@@ -1,9 +1,9 @@
 use anyhow::Context;
 use clap::{Args as ClapArgs, Subcommand};
 use serde_json::json;
-use std::fs::{create_dir_all, write};
-use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::fs::{create_dir_all, OpenOptions};
+use std::io::{ErrorKind, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
 use crate::cli::Global;
@@ -37,9 +37,14 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     }
 }
 
-fn git_dir() -> Result<PathBuf> {
+fn hook_path() -> Result<PathBuf> {
     let out = StdCommand::new("git")
-        .args(["rev-parse", "--git-dir"])
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "hooks/pre-commit",
+        ])
         .output()
         .map_err(|e| AkmError::Internal(anyhow::anyhow!("git not in PATH: {e}")))?;
     if !out.status.success() {
@@ -49,17 +54,12 @@ fn git_dir() -> Result<PathBuf> {
         .map_err(|e| AkmError::Internal(anyhow::anyhow!("invalid utf-8 from git: {e}")))?;
     let trimmed = s.trim();
     let p = PathBuf::from(trimmed);
-    if p.is_absolute() {
-        Ok(p)
-    } else {
-        Ok(std::env::current_dir()
-            .map_err(AkmError::from)?
-            .join(p))
+    if trimmed.is_empty() || !p.is_absolute() {
+        return Err(AkmError::Internal(anyhow::anyhow!(
+            "git returned an invalid pre-commit hook path: {trimmed:?}"
+        )));
     }
-}
-
-fn hook_path() -> Result<PathBuf> {
-    Ok(git_dir()?.join("hooks").join("pre-commit"))
+    Ok(p)
 }
 
 const HOOK_SCRIPT: &str = "#!/usr/bin/env sh
@@ -67,18 +67,100 @@ const HOOK_SCRIPT: &str = "#!/usr/bin/env sh
 exec akm guard scan
 ";
 
-fn install(global: &Global) -> Result<u8> {
-    let p = hook_path()?;
-    if let Some(parent) = p.parent() {
-        create_dir_all(parent)?;
+enum HookState {
+    Missing,
+    Owned,
+    Different,
+    Symlink,
+}
+
+fn hook_state(path: &Path) -> Result<HookState> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(HookState::Missing),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() {
+        return Ok(HookState::Symlink);
     }
-    write(&p, HOOK_SCRIPT)?;
+    if !metadata.is_file() {
+        return Ok(HookState::Different);
+    }
+    if std::fs::read(path)? == HOOK_SCRIPT.as_bytes() {
+        Ok(HookState::Owned)
+    } else {
+        Ok(HookState::Different)
+    }
+}
+
+fn unmanaged_hook_error(path: &Path, state: HookState, suggestion: &str) -> AkmError {
+    let kind = match state {
+        HookState::Symlink => "a symbolic link",
+        _ => "an existing hook AKM does not own",
+    };
+    AkmError::BadInput(format!(
+        "refusing to modify {kind} at {}; AKM left it unchanged. {suggestion}.",
+        path.display(),
+    ))
+}
+
+fn make_executable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&p)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&p, perms)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_mode(0o755);
+        file.set_permissions(permissions)?;
+    }
+    Ok(())
+}
+
+fn install(global: &Global) -> Result<u8> {
+    let p = hook_path()?;
+    match hook_state(&p)? {
+        HookState::Owned => make_executable(&p)?,
+        state @ (HookState::Different | HookState::Symlink) => {
+            return Err(unmanaged_hook_error(
+                &p,
+                state,
+                "Add `akm guard scan` to that hook yourself, or remove it and rerun `akm guard install`",
+            ));
+        }
+        HookState::Missing => {
+            if let Some(parent) = p.parent() {
+                create_dir_all(parent)?;
+            }
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o755);
+            }
+            match options.open(&p) {
+                Ok(mut file) => file.write_all(HOOK_SCRIPT.as_bytes())?,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    let state = hook_state(&p)?;
+                    match state {
+                        HookState::Owned => {}
+                        _ => {
+                            return Err(unmanaged_hook_error(
+                                &p,
+                                state,
+                                "Add `akm guard scan` to that hook yourself, or remove it and rerun `akm guard install`",
+                            ));
+                        }
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+            make_executable(&p)?;
+        }
     }
     let json_mode = global.json || !std::io::stdout().is_terminal();
     if json_mode {
@@ -94,7 +176,20 @@ fn install(global: &Global) -> Result<u8> {
 
 fn uninstall(global: &Global) -> Result<u8> {
     let p = hook_path()?;
-    let removed = p.exists() && std::fs::remove_file(&p).is_ok();
+    let removed = match hook_state(&p)? {
+        HookState::Missing => false,
+        HookState::Owned => {
+            std::fs::remove_file(&p)?;
+            true
+        }
+        state @ (HookState::Different | HookState::Symlink) => {
+            return Err(unmanaged_hook_error(
+                &p,
+                state,
+                "Remove it manually only if you intend to delete it",
+            ));
+        }
+    };
     let json_mode = global.json || !std::io::stdout().is_terminal();
     if json_mode {
         println!(
@@ -129,6 +224,30 @@ const PATTERNS: &[(&str, &str)] = &[
     ("Fly.io", "FlyV1 "),
     ("AWS access key id", "AKIA"),
 ];
+
+const MIN_SECRET_SUFFIX_LEN: usize = 16;
+
+fn candidate_index(content: &[u8], prefix: &str) -> Option<usize> {
+    let prefix = prefix.as_bytes();
+    let mut search_from = 0;
+
+    while search_from + prefix.len() <= content.len() {
+        let relative_index = content[search_from..]
+            .windows(prefix.len())
+            .position(|window| window == prefix)?;
+        let index = search_from + relative_index;
+        let suffix_len = content[index + prefix.len()..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            .count();
+        if suffix_len >= MIN_SECRET_SUFFIX_LEN {
+            return Some(index);
+        }
+
+        search_from = index + prefix.len();
+    }
+    None
+}
 
 /// List the paths of staged blobs as added/copied/modified, NUL-delimited so
 /// filenames with spaces / newlines are handled correctly.
@@ -172,15 +291,10 @@ fn scan(global: &Global) -> Result<u8> {
     let paths = staged_paths()?;
     let mut hits: Vec<serde_json::Value> = Vec::new();
     for p in &paths {
-        let bytes = match staged_blob(p) {
-            Ok(b) => b,
-            Err(_) => continue, // binary or unreadable staged entry — skip
-        };
-        // Lossy is fine: we are matching ASCII prefixes.
-        let content = String::from_utf8_lossy(&bytes);
+        let bytes = staged_blob(p)?;
         for (label, needle) in PATTERNS {
-            if let Some(idx) = content.find(needle) {
-                let line = content[..idx].matches('\n').count() + 1;
+            if let Some(idx) = candidate_index(&bytes, needle) {
+                let line = bytes[..idx].iter().filter(|byte| **byte == b'\n').count() + 1;
                 hits.push(json!({
                     "path": p,
                     "line": line,
@@ -211,7 +325,9 @@ fn scan(global: &Global) -> Result<u8> {
                 );
             }
             eprintln!("\nIf these are intentional, bypass with `git commit --no-verify`.");
-            eprintln!("Better: store with `akm add NAME` and reference via `akm run -- <cmd>`.");
+            eprintln!(
+                "Better: store with `akm add NAME` and reference via `akm run --only NAME -- <cmd>`."
+            );
         }
         Ok(exit::BAD_INPUT)
     }

@@ -28,14 +28,18 @@ pub struct Skip {
 pub fn run(args: Args, global: &Global) -> Result<u8> {
     let (content, input_mode) = match args.file.as_deref() {
         None | Some("-") => {
+            if std::io::stdin().is_terminal() {
+                return Err(AkmError::BadInput(
+                    "provide a file path or pipe NAME=VALUE lines on stdin".into(),
+                ));
+            }
             let mut buf = String::new();
             std::io::stdin().read_to_string(&mut buf)?;
             (buf, "stdin")
         }
         Some(path) => {
-            let s = std::fs::read_to_string(path).map_err(|e| {
-                AkmError::BadInput(format!("cannot read '{}': {}", path, e))
-            })?;
+            let s = std::fs::read_to_string(path)
+                .map_err(|e| AkmError::BadInput(format!("cannot read '{}': {}", path, e)))?;
             (s, "file")
         }
     };
@@ -47,16 +51,20 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
 
     let mut stored: Vec<serde_json::Value> = Vec::with_capacity(entries.len());
     for (name, value) in &entries {
-        let existed = if args.dry_run {
-            keychain::exists(name).unwrap_or(false)
+        let action = if args.dry_run {
+            "would_store"
         } else {
-            let e = keychain::exists(name)?;
+            let existed = keychain::exists(name)?;
             keychain::set(name, value)?;
-            e
+            if existed {
+                "updated"
+            } else {
+                "created"
+            }
         };
         stored.push(json!({
             "name": name,
-            "action": if existed { "updated" } else { "created" },
+            "action": action,
         }));
     }
 
@@ -88,7 +96,11 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
             }))
         );
     } else if !global.quiet {
-        let verb = if args.dry_run { "would store" } else { "stored" };
+        let verb = if args.dry_run {
+            "would store"
+        } else {
+            "stored"
+        };
         eprintln!("akm: {} {} key(s)", verb, entries.len());
         for s in &skipped {
             eprintln!("akm: skipped line {}: {}", s.line, s.reason);
@@ -99,14 +111,15 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
 
 /// Parse .env-style content: `NAME=VALUE` per line, `export ` prefix allowed,
 /// `#` comments and blank lines ignored, single/double quotes stripped,
-/// unquoted trailing ` # comment` stripped. Later duplicates win (matches
+/// unquoted trailing ` # comment` stripped; multiline quoted values supported. Later duplicates win (matches
 /// dotenv-loader behaviour). Invalid names and empty values are skipped with
 /// a reason — never stored silently wrong.
 pub fn parse_dotenv(content: &str) -> (Vec<(String, String)>, Vec<Skip>) {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut skipped: Vec<Skip> = Vec::new();
 
-    for (idx, raw) in content.lines().enumerate() {
+    let mut lines = content.lines().enumerate().peekable();
+    while let Some((idx, raw)) = lines.next() {
         let lineno = idx + 1;
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -121,40 +134,108 @@ pub fn parse_dotenv(content: &str) -> (Vec<(String, String)>, Vec<Skip>) {
             continue;
         };
         let name = line[..eq].trim();
-        let mut value = line[eq + 1..].trim();
-
-        let first = value.chars().next();
-        if first == Some('"') || first == Some('\'') {
-            // Quoted value: take everything inside the matching close quote,
-            // dropping any trailing inline comment. Unterminated quotes fall
-            // through and keep the raw value.
-            let q = first.unwrap();
-            if let Some(end) = value[1..].find(q) {
-                value = &value[1..1 + end];
+        if let Err(error) = keychain::validate_name(name) {
+            skipped.push(Skip {
+                line: lineno,
+                reason: error.to_string(),
+            });
+            continue;
+        }
+        let mut raw_value = line[eq + 1..].trim_start().to_string();
+        let value = loop {
+            match parse_value(&raw_value) {
+                Ok(value) => break Some(value),
+                Err(()) => match lines.next() {
+                    Some((_, next)) => {
+                        raw_value.push('\n');
+                        raw_value.push_str(next);
+                    }
+                    None => {
+                        skipped.push(Skip {
+                            line: lineno,
+                            reason: "unterminated quoted value".into(),
+                        });
+                        break None;
+                    }
+                },
             }
-        } else if let Some(hash) = value.find(" #") {
-            value = value[..hash].trim_end();
-        }
-
-        if let Err(e) = keychain::validate_name(name) {
+        };
+        let Some(value) = value else { continue };
+        if value.is_empty() || value.contains('\0') {
             skipped.push(Skip {
                 line: lineno,
-                reason: e.to_string(),
+                reason: "empty value or NUL byte".into(),
             });
             continue;
         }
-        if value.is_empty() {
-            skipped.push(Skip {
-                line: lineno,
-                reason: format!("empty value for '{}'", name),
-            });
-            continue;
-        }
-        // Later duplicate wins.
         out.retain(|(n, _)| n != name);
-        out.push((name.to_string(), value.to_string()));
+        out.push((name.to_string(), value));
     }
     (out, skipped)
+}
+
+/// Literal dotenv/shell-quoted values, including AKM's export representation.
+/// Never evaluate expansions, command substitutions, or shell code.
+fn parse_value(input: &str) -> std::result::Result<String, ()> {
+    let mut output = String::new();
+    let mut chars = input.chars().peekable();
+    let mut quote = None;
+    let mut trailing_space = 0;
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                } else {
+                    output.push(ch);
+                }
+                trailing_space = 0;
+            }
+            Some('"') => {
+                match ch {
+                    '"' => quote = None,
+                    '\\' => match chars.next() {
+                        Some('n') => output.push('\n'),
+                        Some('r') => output.push('\r'),
+                        Some('t') => output.push('\t'),
+                        Some(c @ ('"' | '\\' | '$' | '`')) => output.push(c),
+                        Some(c) => {
+                            output.push('\\');
+                            output.push(c);
+                        }
+                        None => return Err(()),
+                    },
+                    _ => output.push(ch),
+                }
+                trailing_space = 0;
+            }
+            _ => match ch {
+                '\'' | '"' => {
+                    quote = Some(ch);
+                    trailing_space = 0;
+                }
+                '#' if output.is_empty() || trailing_space > 0 => break,
+                '\\' => {
+                    let next = chars.next().ok_or(())?;
+                    output.push(next);
+                    trailing_space = 0;
+                }
+                _ => {
+                    output.push(ch);
+                    trailing_space = if ch.is_whitespace() {
+                        trailing_space + ch.len_utf8()
+                    } else {
+                        0
+                    };
+                }
+            },
+        }
+    }
+    if quote.is_some() {
+        return Err(());
+    }
+    output.truncate(output.len() - trailing_space);
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -176,7 +257,8 @@ mod tests {
 
     #[test]
     fn strips_quotes_and_comments() {
-        let (e, _) = parse_dotenv("A=\"with space\"\nB='single'\nC=plain # trailing\n# whole line\n\n");
+        let (e, _) =
+            parse_dotenv("A=\"with space\"\nB='single'\nC=plain # trailing\n# whole line\n\n");
         assert_eq!(
             e,
             vec![
@@ -213,5 +295,33 @@ mod tests {
     fn later_duplicate_wins() {
         let (e, _) = parse_dotenv("A=first\nA=second\n");
         assert_eq!(e, vec![("A".to_string(), "second".to_string())]);
+    }
+}
+
+#[cfg(test)]
+mod roundtrip_tests {
+    use super::*;
+    #[test]
+    fn exported_values_round_trip_without_evaluation() {
+        for value in [
+            "a'b",
+            "a\nb",
+            " leading and trailing ",
+            "double\"quote",
+            "back\\slash",
+            "$(touch never) $HOME",
+            "a # b",
+        ] {
+            let text = format!("KEY={}\n", crate::commands::export::shell_quote(value));
+            let (entries, skipped) = parse_dotenv(&text);
+            assert!(skipped.is_empty());
+            assert_eq!(entries, vec![("KEY".to_string(), value.to_string())]);
+        }
+    }
+    #[test]
+    fn rejects_unterminated_quotes() {
+        let (entries, skipped) = parse_dotenv("KEY='unfinished");
+        assert!(entries.is_empty());
+        assert_eq!(skipped[0].reason, "unterminated quoted value");
     }
 }

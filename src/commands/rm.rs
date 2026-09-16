@@ -5,7 +5,7 @@ use std::io::IsTerminal;
 use crate::audit;
 use crate::cli::Global;
 use crate::envelope;
-use crate::error::{AkmError, Result};
+use crate::error::Result;
 use crate::exit;
 use crate::keychain;
 
@@ -20,7 +20,7 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     // read failure (Internal).
     let existed = keychain::exists(&args.name)?;
     if existed {
-        keychain::remove(&args.name).map_err(AkmError::Internal)?;
+        keychain::remove(&args.name)?;
     }
 
     let mut entry = audit::entry_base("rm", if existed { "ok" } else { "noop" });

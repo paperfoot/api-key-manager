@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 
 mod audit;
+mod child;
 mod cli;
 mod commands;
 mod envelope;
