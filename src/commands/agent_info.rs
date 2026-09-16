@@ -99,6 +99,7 @@ fn annotations() -> Value {
         "list": {"effect":"read", "examples":[["list"],["list","--long"]]},
         "export": {"effect":"read", "use_when":"explicit backup or migration; output contains raw secrets", "audited":true},
         "import": {"effect":"write", "use_when":"requested dotenv migration; source file is never deleted", "examples":[["import",".env","--dry-run"]]},
+        "migrate": {"effect":"write", "use_when":"explicit upgrade from an older AKM executable; copies values through private pipes and preserves originals", "idempotent":true},
         "rm": {"effect":"write", "idempotent":true},
         "audit": {"effect":"read", "examples":[["audit","--limit","10"]]},
         "guard install": {"effect":"write", "preserves_existing_hooks":true},
@@ -142,7 +143,7 @@ fn manifest(filter: Option<&str>) -> Result<Value> {
         "commands":entries, "global_flags":globals,
         "exit_codes":{"0":"success","1":"runtime failure","2":"setup","3":"bad_input","6":"not_found"},
         "output":{"envelope_version":"1","success":"ok","errors":"stderr","discovery":"data.commands in the existing success envelope", "help_version":"plain text"},
-        "keychain":{"backend":"macOS Login Keychain","service":"com.paperfoot.akm", "interactive":false, "unavailable":"keychain_unavailable on stderr; check HOME and unlock the existing Keychain"},
+        "keychain":{"backend":"macOS Login Keychain","service":crate::keychain::SERVICE, "legacy_service":crate::keychain::LEGACY_SERVICE, "interactive":false, "unavailable":"keychain_unavailable on stderr; check HOME and unlock the existing Keychain"},
         "threat_model":{"protects":"accidental disclosure through files, argv and child output", "trusts":"processes running as your user"}
     }))
 }

@@ -52,6 +52,8 @@ pub enum Cmd {
     Export(commands::export::Args),
     /// Import keys from a .env-style file or stdin.
     Import(commands::import_cmd::Args),
+    /// Copy keys from a trusted older AKM executable; preserve originals.
+    Migrate(commands::migrate::Args),
     /// Remove a key.
     Rm(commands::rm::Args),
     /// Print the audit log.
@@ -121,6 +123,7 @@ pub fn run() -> u8 {
         Cmd::List(args) => commands::list::run(args, &global),
         Cmd::Export(args) => commands::export::run(args, &global),
         Cmd::Import(args) => commands::import_cmd::run(args, &global),
+        Cmd::Migrate(args) => commands::migrate::run(args, &global),
         Cmd::Rm(args) => commands::rm::run(args, &global),
         Cmd::Audit(args) => commands::audit_cmd::run(args, &global),
         Cmd::Guard(args) => commands::guard::run(args, &global),

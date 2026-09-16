@@ -14,7 +14,7 @@ AKM is a small local CLI. It needs no account, server, background process, or se
 
 ```sh
 brew install paperfoot/tap/akm
-# or
+# Source build (requires a stable signing identity for seamless upgrades):
 cargo install api-key-manager --locked
 ```
 
@@ -28,6 +28,35 @@ akm skill status
 ```
 
 Updating the binary does not update an already installed skill automatically; run `akm skill install` after an upgrade.
+
+## Upgrade from 0.1 or 0.2
+
+Homebrew and GitHub releases use a stable Developer ID signature. Older local
+builds used a signature tied to one executable; a replacement can lose access to
+its Keychain items. Keep a copy of the working binary **before upgrading**:
+
+```sh
+mkdir -p ~/.akm/legacy
+cp "$(command -v akm)" ~/.akm/legacy/akm-before-upgrade
+brew upgrade akm
+akm migrate --from ~/.akm/legacy/akm-before-upgrade --dry-run
+akm migrate --from ~/.akm/legacy/akm-before-upgrade
+akm skill install
+```
+
+Migration copies values through private pipes into `com.paperfoot.akm.v2`,
+verifies each write, skips existing destination entries, and preserves the old
+`com.paperfoot.akm` entries. Values never appear in its output or temporary files.
+Use `--only NAME,NAME` to select a subset. It stops on the first source failure or
+five-second timeout and can be rerun. The older source executable may request
+Keychain access; migration cannot suppress another process's dialogs.
+
+New items take precedence; readable legacy entries remain a fallback. `rm`
+removes both copies so an old value cannot reappear. After migration, write new
+values with the new binary; old binaries still see the preserved original values.
+Source builds need consistent code signing too; replacing an ad-hoc signed
+binary can require authorizing the new executable in Keychain Access. Do not
+remove the only binary that can read your keys before verifying its replacement.
 
 ## Store and use a key
 
@@ -85,7 +114,7 @@ Check an import's `skipped` entries and validate your replacement configuration 
 
 Keep `HOME` set to your actual macOS account home when using Keychain. If AKM reports `keychain_unavailable`, check the existing Login Keychain in Keychain Access and unlock it if needed. AKM never resets a Keychain, changes its access controls, or disables system-wide security prompts. Dialog suppression is limited to the AKM process.
 
-AKM keeps the existing file-based Keychain backend so existing items remain accessible. Apple's data-protection Keychain has different code-signing and entitlement requirements; switching backends would require a separate migration.
+AKM keeps the file-based Keychain backend. Signed releases and the explicit migration above address access changes when replacing older executables. Apple's data-protection Keychain has different code-signing and entitlement requirements; switching backends would require a separate migration.
 
 Successful operations and subprocess lifecycles are recorded in `~/.akm/audit.log` with mode `0600`, using names and metadata, never secret values or complete child arguments. Logs are best effort: failed lookups before execution and forced kills may have no terminal record. The log is writable by the same user and is not a tamper-proof access control.
 

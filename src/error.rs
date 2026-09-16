@@ -37,7 +37,7 @@ impl AkmError {
         match self {
             Self::BadInput(_) => "Use `akm <command> --help` or `akm agent-info --command <command>` for accepted arguments.",
             Self::NotFound(_) => "Use `akm list` to find the stored name, or supply the value to `akm add NAME` through stdin.",
-            Self::KeychainUnavailable(_) => "Open Keychain Access and check that your existing login Keychain is available and unlocked. Keep HOME set to your macOS account home; do not reset the Keychain.",
+            Self::KeychainUnavailable(_) => "Open Keychain Access and check that your existing login Keychain is available and unlocked. Keep HOME set to your macOS account home; do not reset the Keychain. After upgrading from an unsigned AKM, use `akm migrate --from /path/to/old/akm`.",
             Self::Internal(_) => "Check the named resource, executable, or macOS Keychain access. Check the operation outcome before retrying a write.",
         }
     }

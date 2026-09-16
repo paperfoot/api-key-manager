@@ -3,6 +3,7 @@
 ## 0.3.0
 
 - Prevent macOS Keychain dialogs from blocking agent jobs. Report unavailable access with a recovery suggestion; keep existing Keychain items and permissions.
+- Sign release binaries with a stable Developer ID. Add an explicit, resumable `migrate --from` path from older executables into a new service namespace; preserve originals and never overwrite destination entries.
 - Forward ordinary child output immediately, redact short secrets and chunk-spanning values, drain output while writing stdin, and forward cancellation to noninteractive child process groups.
 - Keep wrapper output quiet by default. Emit completion metadata only with explicit `--json`, with failure status for a nonzero child. Preserve child exit codes and record spawn/transport failures in the audit lifecycle.
 - Send parser and runtime errors to stderr with recovery suggestions. Invalid arguments use exit 3 and do not echo potential credentials.

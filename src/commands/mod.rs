@@ -6,6 +6,7 @@ pub mod get;
 pub mod guard;
 pub mod import_cmd;
 pub mod list;
+pub mod migrate;
 pub mod rm;
 pub mod run;
 pub mod skill_install;

@@ -7,7 +7,9 @@ use security_framework::passwords::{
 use crate::error::AkmError;
 
 /// Service prefix used for every keychain entry written by akm.
-pub const SERVICE: &str = "com.paperfoot.akm";
+pub const SERVICE: &str = "com.paperfoot.akm.v2";
+/// Read-only fallback for pre-0.3 items. Migration preserves these originals.
+pub const LEGACY_SERVICE: &str = "com.paperfoot.akm";
 
 /// macOS Security framework status code for "item not found".
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
@@ -24,11 +26,29 @@ pub fn set(name: &str, value: &str) -> std::result::Result<(), AkmError> {
     set_generic_password(SERVICE, name, value.as_bytes()).map_err(|e| access_error("write", e))
 }
 
+/// Create without overwriting a concurrent writer during migration.
+pub fn create_if_absent(name: &str, value: &str) -> std::result::Result<bool, AkmError> {
+    validate_name(name).map_err(|e| AkmError::BadInput(e.to_string()))?;
+    let keychain = security_framework::os::macos::keychain::SecKeychain::default()
+        .map_err(|e| access_error("open", e))?;
+    match keychain.add_generic_password(SERVICE, name, value.as_bytes()) {
+        Ok(()) => Ok(true),
+        Err(error) if error.code() == -25299 => Ok(false), // errSecDuplicateItem
+        Err(error) => Err(access_error("write", error)),
+    }
+}
+
 /// Fetch a keychain value, distinguishing "not found" from real keychain /
 /// UTF-8 failures so the CLI can map them to the right exit code.
 pub fn get_with_status(name: &str) -> std::result::Result<String, AkmError> {
     validate_name(name).map_err(|e| AkmError::BadInput(e.to_string()))?;
-    let bytes = match get_generic_password(SERVICE, name) {
+    let bytes = match get_generic_password(SERVICE, name).or_else(|error| {
+        if error.code() == ERR_SEC_ITEM_NOT_FOUND {
+            get_generic_password(LEGACY_SERVICE, name)
+        } else {
+            Err(error)
+        }
+    }) {
         Ok(b) => b,
         Err(e) => {
             if e.code() == ERR_SEC_ITEM_NOT_FOUND {
@@ -44,22 +64,24 @@ pub fn get_with_status(name: &str) -> std::result::Result<String, AkmError> {
 /// Check whether a key exists, distinguishing "not found" (Ok(false)) from a
 /// real read failure (Err).
 pub fn exists(name: &str) -> std::result::Result<bool, AkmError> {
-    validate_name(name).map_err(|e| AkmError::BadInput(e.to_string()))?;
-    match get_generic_password(SERVICE, name) {
+    match get_with_status(name) {
         Ok(_) => Ok(true),
-        Err(e) => {
-            if e.code() == ERR_SEC_ITEM_NOT_FOUND {
-                Ok(false)
-            } else {
-                Err(access_error("read", e))
-            }
-        }
+        Err(AkmError::NotFound(_)) => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
 pub fn remove(name: &str) -> std::result::Result<(), AkmError> {
     validate_name(name).map_err(|e| AkmError::BadInput(e.to_string()))?;
-    delete_generic_password(SERVICE, name).map_err(|e| access_error("delete", e))
+    // Remove the fallback first so a failed deletion cannot revive an old value.
+    for service in [LEGACY_SERVICE, SERVICE] {
+        if let Err(error) = delete_generic_password(service, name) {
+            if error.code() != ERR_SEC_ITEM_NOT_FOUND {
+                return Err(access_error("delete", error));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Enumerate all akm-owned keychain entries via SecItemCopyMatching, NOT by
@@ -68,9 +90,21 @@ pub fn remove(name: &str) -> std::result::Result<(), AkmError> {
 /// reflected immediately under concurrent writes, so integration tests no
 /// longer need single-threaded execution.
 pub fn list_names() -> std::result::Result<Vec<String>, AkmError> {
+    let mut names = primary_names()?;
+    names.extend(names_for_service(LEGACY_SERVICE)?);
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+pub fn primary_names() -> std::result::Result<Vec<String>, AkmError> {
+    names_for_service(SERVICE)
+}
+
+fn names_for_service(service: &str) -> std::result::Result<Vec<String>, AkmError> {
     let mut opts = ItemSearchOptions::new();
     opts.class(ItemClass::generic_password())
-        .service(SERVICE)
+        .service(service)
         .load_attributes(true)
         .limit(Limit::All);
 
