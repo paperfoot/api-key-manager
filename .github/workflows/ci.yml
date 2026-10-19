@@ -35,7 +35,15 @@ jobs:
       - name: Smoke test
         run: |
           ./target/release/akm --version
-          ./target/release/akm agent-info --command run | python3 -c 'import json,sys; assert list(json.load(sys.stdin)["data"]["commands"]) == ["run"]'
+          ./target/release/akm agent-info --command run | python3 -c 'import json,sys; assert list(json.load(sys.stdin)["commands"]) == ["run"]'
+      - name: Framework conformance
+        env:
+          # Pinned so a framework change cannot break unrelated AKM builds.
+          ACF_COMMIT: 998fc2775dd45f3825fa8457dd6eff9251a8336c
+        run: |
+          command -v jq >/dev/null || brew install jq
+          curl -fsSL "https://raw.githubusercontent.com/paperfoot/agent-cli-framework/${ACF_COMMIT}/conformance/conformance.sh" -o "$RUNNER_TEMP/conformance.sh"
+          bash "$RUNNER_TEMP/conformance.sh" ./target/release/akm
       - name: Package executable
         run: |
           arch=$(uname -m)
