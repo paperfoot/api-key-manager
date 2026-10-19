@@ -40,7 +40,7 @@ AKM was built with agents as its main user, and they pick it up without help:
 - **Made to be read by machines.** JSON when piped, errors on stderr with a suggested fix, meaningful exit codes, and the child's own exit code passed through untouched.
 - **Mistakes cost one retry.** Misspell a key and the error lists the closest stored names. A wrong flag gets the command's accepted flags and usage line in the same error.
 - **Cheap to discover.** `akm agent-info` lists every command on one line in 2.6 KB; `akm agent-info --command run` returns only that command. The bundled skill is under 1.5 KB.
-- **Light on your Mac.** About 6 MB of memory per running command and no CPU while it waits. Redaction costs about 3 CPU instructions per output byte. The audit log rotates at 16 MB.
+- **Light on your Mac.** About 10 MB of memory per running command and no CPU while it waits. Redaction costs about 3 CPU instructions per output byte. The audit log rotates at 16 MB.
 - **It fits Claude Code's auto mode.** The built-in rules block printing a credential but allow "piping the credential directly into the consuming command so it never reaches stdout". That is what `akm run` and `akm stdin` do.
 
 On the author's Mac, agents and the scripts they wrote called AKM about 19,000 times in the five weeks after 0.3.0 shipped, across 89 git repositories. In a sample of 595 agent tool calls, two had a syntax mistake, and both forms are valid now.
