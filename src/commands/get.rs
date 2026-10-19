@@ -1,6 +1,6 @@
 use clap::Args as ClapArgs;
 use serde_json::json;
-use std::io::IsTerminal;
+use std::io::Write;
 
 use crate::audit;
 use crate::cli::Global;
@@ -16,14 +16,23 @@ pub struct Args {
     /// Print the unmasked value
     #[arg(long)]
     pub raw: bool,
+    /// Print only the unmasked value, no JSON or newline (for programs)
+    #[arg(long)]
+    pub value: bool,
 }
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
     // Status-aware getter — propagates BadInput / NotFound / Internal so the
     // top-level error mapping returns the right exit code.
-    let value = keychain::get_with_status(&args.name)?;
+    let value = keychain::get_with_status(&args.name)
+        .map_err(|e| keychain::with_candidates(e, &args.name))?;
 
-    let mut entry = audit::entry_base(if args.raw { "get-raw" } else { "get" }, "ok");
+    let command = match (args.value, args.raw) {
+        (true, _) => "get-value",
+        (false, true) => "get-raw",
+        (false, false) => "get",
+    };
+    let mut entry = audit::entry_base(command, "ok");
     entry.keys = vec![args.name.clone()];
     if let Err(e) = audit::append(&entry) {
         if !global.quiet {
@@ -31,13 +40,19 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
         }
     }
 
+    if args.value {
+        // An explicit byte stream for programs: exactly the stored value.
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(value.as_bytes())?;
+        stdout.flush()?;
+        return Ok(exit::SUCCESS);
+    }
     let display = if args.raw {
         value.clone()
     } else {
         mask(&value)
     };
-    let json_mode = global.json || !std::io::stdout().is_terminal();
-    if json_mode {
+    if global.json_mode() {
         println!(
             "{}",
             envelope::ok(json!({

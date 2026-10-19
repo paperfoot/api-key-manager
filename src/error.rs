@@ -24,6 +24,15 @@ pub enum AkmError {
     #[error("{0}")]
     NotFound(String),
 
+    /// A requested key is missing; `details.candidates` names similar stored
+    /// keys (names only) so the caller can retry without listing. Exit 6.
+    #[error("{message}")]
+    MissingKey {
+        message: String,
+        suggestion: String,
+        details: serde_json::Value,
+    },
+
     /// Keychain missing, locked, or refusing access without UI. Exit 2.
     #[error("{0}")]
     KeychainUnavailable(String),
@@ -45,7 +54,7 @@ impl AkmError {
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::BadInput(_) | Self::Usage { .. } | Self::SecretsStaged(_) => exit::BAD_INPUT,
-            Self::NotFound(_) => exit::NOT_FOUND,
+            Self::NotFound(_) | Self::MissingKey { .. } => exit::NOT_FOUND,
             Self::KeychainUnavailable(_) | Self::Diagnostics(_) => exit::SETUP,
             Self::RateLimited(_) => exit::RATE_LIMITED,
             Self::Internal(_) => exit::TRANSIENT,
@@ -55,7 +64,9 @@ impl AkmError {
     pub fn suggestion(&self) -> Cow<'static, str> {
         match self {
             Self::BadInput(_) => "Check accepted arguments with `akm <command> --help` or `akm agent-info --command <command>`.".into(),
-            Self::Usage { suggestion, .. } => suggestion.clone().into(),
+            Self::Usage { suggestion, .. } | Self::MissingKey { suggestion, .. } => {
+                suggestion.clone().into()
+            }
             Self::SecretsStaged(_) => "Remove the values listed in error.details.hits from the staged files and store them with `akm add NAME`; bypass with `git commit --no-verify` only for intentional examples.".into(),
             Self::NotFound(_) => "Use `akm list` to find the stored name, or supply the value to `akm add NAME` through stdin.".into(),
             Self::KeychainUnavailable(_) => "Run `akm doctor`. Unlock your existing login Keychain and keep HOME set to your macOS account home; do not reset the Keychain. After upgrading from an unsigned AKM, use `akm migrate --from /path/to/old/akm`.".into(),
@@ -73,6 +84,7 @@ impl AkmError {
             | Self::Usage { .. }
             | Self::SecretsStaged(_)
             | Self::NotFound(_)
+            | Self::MissingKey { .. }
             | Self::Diagnostics(_) => Some(false),
             Self::RateLimited(_) => Some(true),
             Self::KeychainUnavailable(_) | Self::Internal(_) => None,
@@ -81,7 +93,9 @@ impl AkmError {
 
     pub fn details(&self) -> Option<&serde_json::Value> {
         match self {
-            Self::SecretsStaged(details) | Self::Diagnostics(details) => Some(details),
+            Self::SecretsStaged(details)
+            | Self::Diagnostics(details)
+            | Self::MissingKey { details, .. } => Some(details),
             _ => None,
         }
     }
@@ -90,7 +104,7 @@ impl AkmError {
         match self {
             Self::BadInput(_) | Self::Usage { .. } => "bad_input",
             Self::SecretsStaged(_) => "secrets_staged",
-            Self::NotFound(_) => "not_found",
+            Self::NotFound(_) | Self::MissingKey { .. } => "not_found",
             Self::KeychainUnavailable(_) => "keychain_unavailable",
             Self::Diagnostics(_) => "setup_error",
             Self::RateLimited(_) => "rate_limited",

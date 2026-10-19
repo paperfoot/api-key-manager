@@ -50,7 +50,8 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     let names: Vec<String> = mappings.iter().map(|(_, source)| source.clone()).collect();
     let mut pairs = Vec::with_capacity(mappings.len());
     for (target, source) in &mappings {
-        let value = keychain::get_with_status(source)?;
+        let value =
+            keychain::get_with_status(source).map_err(|e| keychain::with_candidates(e, source))?;
         pairs.push((target.clone(), value));
     }
 

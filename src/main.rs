@@ -9,6 +9,7 @@ mod error;
 mod exit;
 mod keychain;
 mod redact;
+mod similar;
 mod skill;
 
 fn main() -> ExitCode {

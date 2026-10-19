@@ -33,7 +33,8 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     }
     keychain::validate_name(&args.name).map_err(|e| AkmError::BadInput(e.to_string()))?;
 
-    let value = keychain::get_with_status(&args.name)?;
+    let value = keychain::get_with_status(&args.name)
+        .map_err(|e| keychain::with_candidates(e, &args.name))?;
 
     let run_id = audit::new_run_id();
     {

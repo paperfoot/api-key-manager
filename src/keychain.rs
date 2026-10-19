@@ -64,6 +64,30 @@ pub fn get_with_status(name: &str) -> std::result::Result<String, AkmError> {
         .map_err(|_| AkmError::Internal(anyhow!("keychain entry '{}' is not valid UTF-8", name)))
 }
 
+/// Turn a not-found error for `name` into one that names up to five similar
+/// stored keys (names only), so the caller can retry without `akm list`.
+pub fn with_candidates(error: AkmError, name: &str) -> AkmError {
+    let AkmError::NotFound(message) = error else {
+        return error;
+    };
+    let candidates = list_names()
+        .map(|stored| crate::similar::names(name, &stored, 5))
+        .unwrap_or_default();
+    let suggestion = if candidates.is_empty() {
+        "Use `akm list` to find the stored name, or supply the value to `akm add NAME` through stdin.".to_string()
+    } else {
+        format!(
+            "Similar stored keys: {}. Retry with one of them, or store this name with `akm add {name}` through stdin.",
+            candidates.join(", ")
+        )
+    };
+    AkmError::MissingKey {
+        message,
+        suggestion,
+        details: serde_json::json!({ "candidates": candidates }),
+    }
+}
+
 /// Whether an item named `name` exists in either namespace, from attributes
 /// alone: `rm` and `import` never decrypt a value just to learn it exists.
 pub fn contains(name: &str) -> std::result::Result<bool, AkmError> {

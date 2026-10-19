@@ -153,8 +153,9 @@ fn annotations() -> Value {
         },
         "get": {
             "effect": "read", "idempotent": true,
-            "effect_detail": "Masked by default; --raw selects the unmasked value, and piped output is still a JSON envelope",
-            "examples": [["get", "OPENAI_API_KEY"]],
+            "effect_detail": "Masked by default; --raw unmasks inside the JSON envelope (data.value); --value prints only the value, no newline, for programs (prefer run or stdin)",
+            "examples": [["get", "OPENAI_API_KEY"], ["get", "OPENAI_API_KEY", "--value"]],
+            "exit_behavior": "6 when missing, with similar stored names in error.details.candidates",
             "output_fields": ["name", "value", "masked"]
         },
         "run": {
@@ -167,7 +168,7 @@ fn annotations() -> Value {
                 ["run", "--only", "STRIPE_SECRET_KEY=PCC1_STRIPE_SECRET_KEY", "--", "node", "script.js"]
             ],
             "output": "child streams with injected values redacted; a completion envelope goes to stderr only with explicit --json",
-            "exit_behavior": "the child's exit code (128+signal when killed); AKM's own failures use the manifest exit codes"
+            "exit_behavior": "the child's exit code (128+signal when killed); AKM's own failures use the manifest exit codes, with error.details.candidates on exit 6"
         },
         "stdin": {
             "effect": "mixed", "idempotent": false,
@@ -178,7 +179,7 @@ fn annotations() -> Value {
                 ["stdin", "OPENAI_API_KEY", "--format", "env", "--", "flyctl", "secrets", "import"]
             ],
             "output": "child streams with the supplied value redacted; a completion envelope goes to stderr only with explicit --json",
-            "exit_behavior": "the child's exit code (128+signal when killed); AKM's own failures use the manifest exit codes"
+            "exit_behavior": "the child's exit code (128+signal when killed); AKM's own failures use the manifest exit codes, with error.details.candidates on exit 6"
         },
         "list": {
             "effect": "read", "idempotent": true,
@@ -348,7 +349,7 @@ pub fn manifest() -> Value {
             "2": "Setup: Keychain unavailable, locked or denying access; run akm doctor",
             "3": "Invalid input; fix the request",
             "4": "Rate limited (not used by AKM)",
-            "6": "Key not found; check akm list"
+            "6": "Key not found; similar stored names are in error.details.candidates"
         },
         "child_exit_codes": "run and stdin exit with the child's code (128+signal when killed)",
         "envelope": {

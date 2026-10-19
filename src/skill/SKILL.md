@@ -18,12 +18,13 @@ stdin. Both redact supplied values from child output and return the child's
 exit code. A command that reads a local file or stdin needs no `akm run` too.
 
 To store a value, pass it to `akm add NAME` through your subprocess API's stdin;
-never put literal credentials in a command line. Names use `[A-Z_][A-Z0-9_]*`;
-`akm list` finds stored names.
+never put literal credentials in a command line. Names use `[A-Z_][A-Z0-9_]*`.
+A missing key exits 6 and lists similar stored names in `error.details.candidates`.
 
-`akm agent-info --command run` describes one command. `get --raw` and `export`
-print secrets: use them only for requested retrieval or backup. Piped
-`get --raw` is still JSON (`data.value`). If Keychain access fails (exit 2), run
+`akm agent-info --command run` describes one command. `get --value`, `get --raw`
+and `export` print secrets: use them only for requested retrieval or backup.
+Programs that need the bare value use `akm get NAME --value` (no JSON, no
+newline); prefer `run` or `stdin`. If Keychain access fails (exit 2), run
 `akm doctor` and follow its suggestions.
 
 Import `.env` only as part of a requested migration; check skipped entries and

@@ -546,3 +546,69 @@ fn list_long_reports_age() {
 
     cleanup(&name);
 }
+
+#[test]
+fn get_value_prints_only_the_bare_value() {
+    let name = unique_key("BARE");
+    let value = "bare-value with spaces\tand tab";
+    akm()
+        .args(["add", &name])
+        .write_stdin(value)
+        .assert()
+        .success();
+
+    let out = akm().args(["get", &name, "--value"]).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(out.stdout, value.as_bytes(), "no envelope, no newline");
+    assert!(out.stderr.is_empty());
+    // Explicit --json does not wrap an explicit byte stream.
+    let out = akm()
+        .args(["--json", "get", &name, "--value"])
+        .output()
+        .unwrap();
+    assert_eq!(out.stdout, value.as_bytes());
+
+    cleanup(&name);
+}
+
+#[test]
+fn missing_key_names_similar_stored_keys() {
+    let name = unique_key("CANDIDATE");
+    akm()
+        .args(["add", &name])
+        .write_stdin("candidate-value-123456")
+        .assert()
+        .success();
+    let typo = format!("{name}X");
+
+    for args in [
+        vec!["get".to_string(), typo.clone()],
+        vec![
+            "run".into(),
+            "--only".into(),
+            typo.clone(),
+            "--".into(),
+            "true".into(),
+        ],
+        vec!["stdin".into(), typo.clone(), "--".into(), "true".into()],
+    ] {
+        let out = akm().args(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(6), "{}", args[0]);
+        let error: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "not_found");
+        let candidates = error["error"]["details"]["candidates"].as_array().unwrap();
+        assert!(candidates.len() <= 5);
+        assert!(
+            candidates.iter().any(|c| c == name.as_str()),
+            "{} lists the near miss",
+            args[0]
+        );
+        assert!(error["error"]["suggestion"]
+            .as_str()
+            .unwrap()
+            .contains(name.as_str()));
+        assert!(!String::from_utf8_lossy(&out.stderr).contains("candidate-value"));
+    }
+
+    cleanup(&name);
+}
