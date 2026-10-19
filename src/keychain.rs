@@ -1,4 +1,7 @@
 use anyhow::{anyhow, Result};
+use core_foundation::base::{CFType, TCFType};
+use core_foundation::data::CFData;
+use core_foundation::string::CFString;
 use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
@@ -61,14 +64,25 @@ pub fn get_with_status(name: &str) -> std::result::Result<String, AkmError> {
         .map_err(|_| AkmError::Internal(anyhow!("keychain entry '{}' is not valid UTF-8", name)))
 }
 
-/// Check whether a key exists, distinguishing "not found" (Ok(false)) from a
-/// real read failure (Err).
-pub fn exists(name: &str) -> std::result::Result<bool, AkmError> {
-    match get_with_status(name) {
-        Ok(_) => Ok(true),
-        Err(AkmError::NotFound(_)) => Ok(false),
-        Err(error) => Err(error),
+/// Whether an item named `name` exists in either namespace, from attributes
+/// alone: `rm` and `import` never decrypt a value just to learn it exists.
+pub fn contains(name: &str) -> std::result::Result<bool, AkmError> {
+    validate_name(name).map_err(|e| AkmError::BadInput(e.to_string()))?;
+    for service in [SERVICE, LEGACY_SERVICE] {
+        let mut opts = ItemSearchOptions::new();
+        opts.class(ItemClass::generic_password())
+            .service(service)
+            .account(name)
+            .load_attributes(true)
+            .limit(1);
+        match opts.search() {
+            Ok(results) if !results.is_empty() => return Ok(true),
+            Ok(_) => {}
+            Err(e) if e.code() == ERR_SEC_ITEM_NOT_FOUND => {}
+            Err(e) => return Err(access_error("search", e)),
+        }
     }
+    Ok(false)
 }
 
 pub fn remove(name: &str) -> std::result::Result<(), AkmError> {
@@ -140,14 +154,24 @@ fn names_for_service(service: &str) -> std::result::Result<Vec<String>, AkmError
         }
     };
 
+    // Read only the account attribute. Converting every attribute (as
+    // SearchResult::simplify_dict does, formatting two dates per item)
+    // dominated the cost of listing.
+    let account = CFString::from_static_string("acct");
     let mut names = Vec::with_capacity(results.len());
     for r in results {
-        if let SearchResult::Dict(_) = &r {
-            if let Some(attrs) = r.simplify_dict() {
-                if let Some(acct) = attrs.get("acct") {
-                    names.push(acct.clone());
-                }
-            }
+        let SearchResult::Dict(dict) = &r else {
+            continue;
+        };
+        let Some(value) = dict.find(account.as_concrete_TypeRef().cast()) else {
+            continue;
+        };
+        // SAFETY: the dictionary retains `value` while this borrow lives.
+        let value = unsafe { CFType::wrap_under_get_rule(*value) };
+        if let Some(text) = value.downcast::<CFString>() {
+            names.push(text.to_string());
+        } else if let Some(data) = value.downcast::<CFData>() {
+            names.push(String::from_utf8_lossy(data.bytes()).into_owned());
         }
     }
 

@@ -16,9 +16,9 @@ pub struct Args {
 }
 
 pub fn run(args: Args, global: &Global) -> Result<u8> {
-    // Use exists() so we distinguish "not present" (noop) from a real keychain
-    // read failure (Internal).
-    let existed = keychain::exists(&args.name)?;
+    // Attribute-only check: "not present" is a noop, a search failure is an
+    // error, and the value is never decrypted just to delete it.
+    let existed = keychain::contains(&args.name)?;
     if existed {
         keychain::remove(&args.name)?;
     }
@@ -28,6 +28,13 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     if let Err(e) = audit::append(&entry) {
         if !global.quiet {
             eprintln!("akm: warning: audit log write failed: {}", e);
+        }
+    }
+    if existed {
+        if let Err(e) = audit::record_removed(&args.name) {
+            if !global.quiet {
+                eprintln!("akm: warning: key-age index write failed: {e}");
+            }
         }
     }
 

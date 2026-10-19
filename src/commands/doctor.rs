@@ -200,26 +200,42 @@ fn audit_check() -> Check {
     let shown = path.display().to_string();
     match std::fs::metadata(&path) {
         Ok(metadata) => {
-            let size = metadata.len();
-            if !writable(&path) {
+            // Rotation renames inside the directory, so it must be writable too.
+            let dir_writable = path.parent().is_some_and(writable);
+            let total = metadata.len()
+                + crate::audit::rotated_paths()
+                    .iter()
+                    .filter_map(|p| std::fs::metadata(p).ok())
+                    .map(|m| m.len())
+                    .sum::<u64>();
+            let mb = |bytes: u64| format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0));
+            if !writable(&path) || !dir_writable {
                 check(
                     "audit_log",
                     Status::Warn,
-                    format!("{shown} is not writable"),
+                    format!("{shown} or its directory is not writable"),
                 )
-                .fix(format!("Make {shown} writable by your user"))
-            } else if size > AUDIT_WARN_BYTES {
+                .fix(format!(
+                    "Make {shown} and its directory writable by your user"
+                ))
+            } else if total > AUDIT_WARN_BYTES {
                 check(
                     "audit_log",
                     Status::Warn,
-                    format!("{shown} is {} MB", size / (1024 * 1024)),
+                    format!("audit logs total {}", mb(total)),
                 )
-                .fix(format!("Archive or truncate {shown} after reviewing it"))
+                .fix(format!(
+                    "Archive the rotated logs next to {shown} after reviewing them"
+                ))
             } else {
                 check(
                     "audit_log",
                     Status::Pass,
-                    format!("{shown} is writable ({size} bytes)"),
+                    format!(
+                        "{shown} is writable; {} with rotated logs, rotating at {}",
+                        mb(total),
+                        mb(crate::audit::ROTATE_BYTES)
+                    ),
                 )
             }
         }

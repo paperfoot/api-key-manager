@@ -54,7 +54,7 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
         let action = if args.dry_run {
             "would_store"
         } else {
-            let existed = keychain::exists(name)?;
+            let existed = keychain::contains(name)?;
             keychain::set(name, value)?;
             if existed {
                 "updated"
@@ -75,6 +75,11 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
         if let Err(e) = audit::append(&entry) {
             if !global.quiet {
                 eprintln!("akm: warning: audit log write failed: {}", e);
+            }
+        }
+        if let Err(e) = audit::record_set(&entry.keys) {
+            if !global.quiet {
+                eprintln!("akm: warning: key-age index write failed: {e}");
             }
         }
     }

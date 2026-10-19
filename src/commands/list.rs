@@ -36,7 +36,7 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     let json_mode = global.json || !std::io::stdout().is_terminal();
 
     let last_set = if args.long || json_mode {
-        audit::last_set_map()
+        audit::key_ages()
     } else {
         Default::default()
     };

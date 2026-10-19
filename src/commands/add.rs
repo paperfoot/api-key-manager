@@ -41,6 +41,11 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
             eprintln!("akm: warning: audit log write failed: {}", e);
         }
     }
+    if let Err(e) = audit::record_set(std::slice::from_ref(&args.name)) {
+        if !global.quiet {
+            eprintln!("akm: warning: key-age index write failed: {e}");
+        }
+    }
 
     let json_mode = global.json || !std::io::stdout().is_terminal();
     if json_mode {

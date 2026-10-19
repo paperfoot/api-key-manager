@@ -231,6 +231,33 @@ fn config_path_reports_the_audit_log() {
 }
 
 #[test]
+fn audit_reads_newest_records_across_rotated_logs() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".akm");
+    std::fs::create_dir(&dir).unwrap();
+    let records = |ids: std::ops::Range<u32>| -> String {
+        ids.map(|id| format!("{{\"id\":{id}}}\n")).collect()
+    };
+    std::fs::write(dir.join("audit.log.2"), records(0..3)).unwrap();
+    std::fs::write(dir.join("audit.log.1"), records(3..6)).unwrap();
+    std::fs::write(dir.join("audit.log"), records(6..8)).unwrap();
+    let out = akm()
+        .env("HOME", home.path())
+        .args(["audit", "-n", "5"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ids: Vec<_> = value["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ids, [3, 4, 5, 6, 7]);
+}
+
+#[test]
 fn skill_status_does_not_install_and_install_is_observable() {
     let home = tempfile::tempdir().unwrap();
     let out = akm()

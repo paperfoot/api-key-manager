@@ -28,7 +28,17 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
         )));
     }
     let path = audit::log_path();
-    let entries = tail_records(&path, args.limit)?;
+    // Newest records first come from the live log, then rotated ones.
+    let mut entries = Vec::new();
+    for file in std::iter::once(path.clone()).chain(audit::rotated_paths()) {
+        let wanted = args.limit - entries.len();
+        if wanted == 0 {
+            break;
+        }
+        let mut older = tail_records(&file, wanted)?;
+        older.append(&mut entries);
+        entries = older;
+    }
 
     let json_mode = global.json || !std::io::stdout().is_terminal();
     if json_mode {
