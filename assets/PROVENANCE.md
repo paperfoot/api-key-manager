@@ -24,3 +24,7 @@ Shared art direction: deep ink background (#14171A, near-black with a hint of gr
 4. banner-a.png (1280x640): GitHub social preview. Left: the logo-a key mark large. Right: wordmark "akm" in a confident monospace, and below it the tagline "Keychain secrets for AI agents" in cream. Bottom-right, small: a single terminal line in sage monospace: "$ akm run --only OPENAI_API_KEY -- python app.py". Exact spelling matters; keep all text crisp and legible.
 5. banner-b.png (1280x640): an illustrated scene: a minimal dark terminal window floating on the ink background; a brass key slides into the side of the window like into a lock, and the window shows two lines: "$ akm run --only STRIPE_KEY -- npm test" and "✓ 42 passed   STRIPE_KEY=[REDACTED]". Wordmark "akm" small in the top-left corner in cream. Exact spelling matters.
 ```
+
+## akm-demo.gif
+
+A 960 px, 15 fps GIF of the 30-second launch video (`~/Projects/akm-video/renders/akm-intro-30s-v1.mp4`, made with HyperFrames; provenance in that project's `PROVENANCE.md`), converted with ffmpeg `palettegen` (128 colours) and `paletteuse` (Bayer dither). It links to the launch post on X, which carries the video with sound.
