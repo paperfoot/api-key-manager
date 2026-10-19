@@ -38,7 +38,9 @@ AKM was built with agents as its main user, and they pick it up without help:
 - **Names in, results out.** `akm list --names-only` shows what exists. Values stay in Keychain and in the one process that needs them.
 - **It never hangs.** No password prompt, Touch ID, or Keychain dialog. When access is unavailable the agent gets an error with the fix, not a frozen job.
 - **Made to be read by machines.** JSON when piped, errors on stderr with a suggested fix, meaningful exit codes, and the child's own exit code passed through untouched.
-- **Cheap to discover.** `akm agent-info` lists every command on one line; `akm agent-info --command run` returns only that command. The bundled skill is about 1.5 KB.
+- **Mistakes cost one retry.** Misspell a key and the error lists the closest stored names. A wrong flag gets the command's accepted flags and usage line in the same error.
+- **Cheap to discover.** `akm agent-info` lists every command on one line in 2.6 KB; `akm agent-info --command run` returns only that command. The bundled skill is under 1.5 KB.
+- **Light on your Mac.** About 6 MB of memory per running command and no CPU while it waits. Redaction costs about 3 CPU instructions per output byte. The audit log rotates at 16 MB.
 - **It fits Claude Code's auto mode.** The built-in rules block printing a credential but allow "piping the credential directly into the consuming command so it never reaches stdout". That is what `akm run` and `akm stdin` do.
 
 On the author's Mac, agents and the scripts they wrote called AKM about 19,000 times in the five weeks after 0.3.0 shipped, across 89 git repositories. In a sample of 595 agent tool calls, two had a syntax mistake, and both forms are valid now.
@@ -115,7 +117,7 @@ It is not a sandbox. Any process running as you can read your keys, including an
 
 If you want the agent to never hold a value at all, pair AKM with a credential-masking proxy. For Claude Code, mask the key in its [sandbox `credentials` setting](https://code.claude.com/docs/en/sandboxing) and start Claude with `akm run --no-redact --only GH_TOKEN -- claude`: sandboxed commands then see a placeholder, and the real value is added only on requests to the hosts you allow.
 
-Every operation and child lifecycle is recorded in `~/.akm/audit.log` (mode `0600`) with names and metadata, never values or full child arguments. The log is best effort, writable by you, and not tamper-proof. The optional `akm guard install` pre-commit hook flags staged known key prefixes followed by token-like text; it is a heuristic, not a full scanner.
+Every operation and child lifecycle is recorded in `~/.akm/audit.log` (mode `0600`) with names and metadata, never values or full child arguments. The log rotates at 16 MB and keeps two older files. It is best effort, writable by you, and not tamper-proof. The optional `akm guard install` pre-commit hook flags staged known key prefixes followed by token-like text; it is a heuristic, not a full scanner.
 
 <details>
 <summary><b>All commands</b></summary>
@@ -126,13 +128,14 @@ Every operation and child lifecycle is recorded in `~/.akm/audit.log` (mode `060
 | `akm stdin NAME -- CMD` | Write one value to a command's stdin. `--format env` writes a shell-quoted `NAME=value`. |
 | `akm add NAME` | Store a key from stdin; replaces an existing value. |
 | `akm list` | List names. `--names-only` prints one per line; `--long` adds the last-write age from the audit log. |
-| `akm get NAME` | Show a masked value. `--raw` shows the full value (still JSON when piped). |
-| `akm rm NAME` | Remove a key; already absent succeeds. |
+| `akm get NAME` | Show a masked value. `--raw` shows the full value (still JSON when piped); `--value` prints only the value, for programs. |
+| `akm rm NAME` | Remove a key (alias `delete`); already absent succeeds. |
 | `akm import FILE` | Import literal dotenv values. `--dry-run` previews without Keychain access. Not transactional. |
 | `akm export` | Export raw values for backup (`--format env` or `json`, `--only` subset). Audit-logged. |
 | `akm migrate --from PATH` | Copy keys from an older AKM executable; see [Upgrading from 0.1 or 0.2](#upgrading-from-01-or-02). |
-| `akm doctor` | Check Keychain access, signature, legacy entries, skill and audit log. Read-only. |
-| `akm update` | Print the upgrade command for this installation. |
+| `akm doctor` | Check Keychain access, signature, legacy entries, skill and audit log. Read-only; reports counts, never names or values. |
+| `akm update` | Print the upgrade command for this installation. No network. |
+| `akm config show \| path` | Show where AKM keeps its audit log, key-age index and Keychain services. |
 | `akm audit --limit 50` | Show the latest audit records. |
 | `akm guard install \| uninstall \| scan` | Manage the optional pre-commit key scan. Preserves existing hooks. |
 | `akm skill install \| status` | Install or check the agent skill for Claude Code, Codex and Gemini CLI. |
@@ -149,7 +152,8 @@ AKM follows the [agent-cli-framework](https://github.com/paperfoot/agent-cli-fra
 - Errors go to stderr as `{"version":"1","status":"error","error":{"code","message","suggestion"}}`, leaving stdout for data.
 - `run` and `stdin` forward the child's output as is. `--json` adds a completion envelope on stderr after the child's own stderr.
 - `agent-info` prints its manifest as raw JSON. `--help` and `--version` stay plain text; `--json --help` wraps the help in an envelope.
-- Exit codes: `0` success, `1` runtime failure, `2` setup (for example Keychain unavailable), `3` bad input, `6` missing key. `run` and `stdin` return the child's code, or `128 + signal`.
+- Exit codes: `0` success, `1` runtime failure, `2` setup (for example Keychain unavailable), `3` bad input, `6` missing key, with similar names in `error.details.candidates`. `run` and `stdin` return the child's code, or `128 + signal`.
+- Programs that need a bare value use `akm get NAME --value`: exactly the stored bytes, with no JSON and no newline. Prefer `run` or `stdin` where the command allows.
 
 </details>
 
