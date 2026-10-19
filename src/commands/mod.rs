@@ -1,6 +1,9 @@
 pub mod add;
 pub mod agent_info;
 pub mod audit_cmd;
+pub mod config;
+pub mod contract;
+pub mod doctor;
 pub mod export;
 pub mod get;
 pub mod guard;
@@ -11,3 +14,4 @@ pub mod rm;
 pub mod run;
 pub mod skill_install;
 pub mod stdin_cmd;
+pub mod update;

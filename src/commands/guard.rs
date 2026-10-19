@@ -19,13 +19,13 @@ pub struct Args {
 
 #[derive(Debug, Subcommand)]
 pub enum Action {
-    /// Install the pre-commit hook in the current git repo.
+    /// Install the pre-commit hook in this repository
     Install,
-    /// Remove the pre-commit hook.
+    /// Remove AKM's pre-commit hook
     Uninstall,
-    /// Scan staged files for known API-key prefixes. Reads the staged blob
-    /// content (not the working-tree file), so a "stage then delete" trick
-    /// can't bypass it.
+    /// Scan staged files for known key prefixes
+    // Reads staged blobs, not the working tree, so "stage then delete"
+    // cannot bypass it.
     Scan,
 }
 
@@ -37,7 +37,7 @@ pub fn run(args: Args, global: &Global) -> Result<u8> {
     }
 }
 
-fn hook_path() -> Result<PathBuf> {
+pub(crate) fn hook_path() -> Result<PathBuf> {
     let out = StdCommand::new("git")
         .args([
             "rev-parse",
@@ -102,6 +102,11 @@ fn unmanaged_hook_error(path: &Path, state: HookState, suggestion: &str) -> AkmE
         "refusing to modify {kind} at {}; AKM left it unchanged. {suggestion}.",
         path.display(),
     ))
+}
+
+/// Whether the hook at `path` is the one AKM writes.
+pub(crate) fn hook_is_akm(path: &Path) -> Result<bool> {
+    Ok(matches!(hook_state(path)?, HookState::Owned))
 }
 
 fn make_executable(path: &Path) -> Result<()> {
@@ -304,15 +309,16 @@ fn scan(global: &Global) -> Result<u8> {
             }
         }
     }
-    let json_mode = global.json || !std::io::stdout().is_terminal();
+    let json_mode = global.json_mode();
     if hits.is_empty() {
         if json_mode {
             println!("{}", envelope::ok(json!({ "hits": [] })));
         }
         Ok(exit::SUCCESS)
     } else {
+        // A blocked commit is a failure: error envelope on stderr, exit 3.
         if json_mode {
-            println!("{}", envelope::ok(json!({ "hits": hits })));
+            return Err(AkmError::SecretsStaged(json!({ "hits": hits })));
         } else {
             eprintln!("akm guard: refusing commit — possible secrets staged:");
             for h in &hits {

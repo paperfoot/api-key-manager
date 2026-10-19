@@ -175,11 +175,18 @@ fn scan_checks_staged_blob_and_finds_candidate_after_bare_prefix() {
 
     let output = akm(repo.path()).args(["guard", "scan"]).output().unwrap();
     assert_eq!(output.status.code(), Some(3));
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("\"path\":\"README.md\""));
-    assert!(stdout.contains("\"prefix\":\"sk-ant-\""));
     assert!(
-        !stdout.contains(body),
+        output.stdout.is_empty(),
+        "a blocked commit is not a success"
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let error: serde_json::Value = serde_json::from_str(&stderr).unwrap();
+    assert_eq!(error["error"]["code"], "secrets_staged");
+    let hit = &error["error"]["details"]["hits"][0];
+    assert_eq!(hit["path"], "README.md");
+    assert_eq!(hit["prefix"], "sk-ant-");
+    assert!(
+        !stderr.contains(body),
         "guard output must not include token bodies"
     );
 }

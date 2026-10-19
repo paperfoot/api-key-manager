@@ -43,10 +43,10 @@ fn version_and_help() {
 fn agent_info_json() {
     let out = akm().args(["agent-info", "--json"]).output().unwrap();
     assert!(out.status.success());
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("\"name\":\"akm\""));
-    assert!(s.contains("\"commands\""));
-    assert!(s.contains("\"threat_model\""));
+    let manifest: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(manifest["name"], "akm");
+    assert!(manifest.get("status").is_none(), "manifest is raw JSON");
+    assert!(manifest["commands"]["run"].is_string());
 }
 
 #[test]

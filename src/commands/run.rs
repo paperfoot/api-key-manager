@@ -8,19 +8,19 @@ use crate::keychain;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Keys to inject, comma-separated. Use ENV=STORED_KEY to rename in the child.
+    /// Keys to inject, comma-separated; ENV=STORED renames one in the child
     #[arg(long, value_delimiter = ',')]
     pub only: Vec<String>,
 
-    /// Inject ALL stored keys. Disabled by default — large blast radius.
+    /// Inject every stored key (large blast radius)
     #[arg(long, conflicts_with = "only")]
     pub all: bool,
 
-    /// Disable the default child stdout/stderr redaction.
+    /// Do not redact injected values from child output
     #[arg(long)]
     pub no_redact: bool,
 
-    /// The command to run (and its args) after `--`.
+    /// Command and arguments after --
     #[arg(allow_hyphen_values = true, last = true, required = true)]
     pub command: Vec<String>,
 }
@@ -118,7 +118,16 @@ pub fn report_exit(command: &str, code: u8, global: &Global) {
                 crate::envelope::ok(serde_json::json!({"exit_code": code, "command": command}))
             );
         } else {
-            eprintln!("{}", crate::envelope::err("child_failed", format!("{command} child exited with code {code}"), Some("Inspect the child diagnostic; do not repeat a write unless its outcome is known.")));
+            eprintln!(
+                "{}",
+                crate::envelope::err(
+                    "child_failed",
+                    format!("{command} child exited with code {code}"),
+                    "Inspect the child diagnostic; do not repeat a write unless its outcome is known.",
+                    None,
+                    Some(&serde_json::json!({"exit_code": code})),
+                )
+            );
         }
     }
 }

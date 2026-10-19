@@ -37,8 +37,9 @@ command = sys.argv[1] if len(sys.argv) > 1 else ""
 if mode == "hang":
     time.sleep(20)
 
+# AKM 0.4+ reports "success" and older releases "ok"; accept both sources.
 if command == "list":
-    print(json.dumps({"version": "1", "status": "ok", "data": {"keys": [name]}}))
+    print(json.dumps({"version": "1", "status": "success", "data": {"keys": [name]}}))
 elif command == "get":
     if marker:
         with open(marker, "a", encoding="utf-8") as handle:

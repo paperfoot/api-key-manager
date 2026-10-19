@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use thiserror::Error;
 
 use crate::exit;
@@ -6,20 +7,36 @@ use crate::exit;
 /// machine-readable error code without inspecting message strings.
 #[derive(Debug, Error)]
 pub enum AkmError {
-    /// User-supplied input is invalid (missing flag, bad value, malformed
-    /// name). Maps to exit 3 / `bad_input`.
+    /// User-supplied input is invalid (bad value, malformed name). Exit 3.
     #[error("{0}")]
     BadInput(String),
 
-    /// Key not found in the keychain. Maps to exit 6 / `not_found`.
+    /// A parse error; `suggestion` lists what the failing command accepts.
+    /// Neither field ever contains the offending argv token. Exit 3.
+    #[error("{message}")]
+    Usage { message: String, suggestion: String },
+
+    /// `guard scan` found candidate secrets; `details.hits` names them. Exit 3.
+    #[error("possible secrets staged for commit")]
+    SecretsStaged(serde_json::Value),
+
+    /// Key not found in the Keychain. Exit 6.
     #[error("{0}")]
     NotFound(String),
 
+    /// Keychain missing, locked, or refusing access without UI. Exit 2.
     #[error("{0}")]
     KeychainUnavailable(String),
 
-    /// Anything else — IO, FFI, upstream process. Maps to exit 1 / `transient`
-    /// since these are typically retriable or environment-dependent.
+    /// `doctor` found failing checks; the full report is in `details`. Exit 2.
+    #[error("doctor found failing checks")]
+    Diagnostics(serde_json::Value),
+
+    /// Only reachable through the hidden `contract` hook. Exit 4.
+    #[error("{0}")]
+    RateLimited(String),
+
+    /// Anything else: IO, FFI, upstream process. Exit 1.
     #[error("{0}")]
     Internal(#[from] anyhow::Error),
 }
@@ -27,27 +44,57 @@ pub enum AkmError {
 impl AkmError {
     pub fn exit_code(&self) -> u8 {
         match self {
-            AkmError::BadInput(_) => exit::BAD_INPUT,
-            AkmError::NotFound(_) => exit::NOT_FOUND,
-            AkmError::Internal(_) | AkmError::KeychainUnavailable(_) => exit::TRANSIENT,
+            Self::BadInput(_) | Self::Usage { .. } | Self::SecretsStaged(_) => exit::BAD_INPUT,
+            Self::NotFound(_) => exit::NOT_FOUND,
+            Self::KeychainUnavailable(_) | Self::Diagnostics(_) => exit::SETUP,
+            Self::RateLimited(_) => exit::RATE_LIMITED,
+            Self::Internal(_) => exit::TRANSIENT,
         }
     }
 
-    pub fn suggestion(&self) -> &'static str {
+    pub fn suggestion(&self) -> Cow<'static, str> {
         match self {
-            Self::BadInput(_) => "Use `akm <command> --help` or `akm agent-info --command <command>` for accepted arguments.",
-            Self::NotFound(_) => "Use `akm list` to find the stored name, or supply the value to `akm add NAME` through stdin.",
-            Self::KeychainUnavailable(_) => "Open Keychain Access and check that your existing login Keychain is available and unlocked. Keep HOME set to your macOS account home; do not reset the Keychain. After upgrading from an unsigned AKM, use `akm migrate --from /path/to/old/akm`.",
-            Self::Internal(_) => "Check the named resource, executable, or macOS Keychain access. Check the operation outcome before retrying a write.",
+            Self::BadInput(_) => "Check accepted arguments with `akm <command> --help` or `akm agent-info --command <command>`.".into(),
+            Self::Usage { suggestion, .. } => suggestion.clone().into(),
+            Self::SecretsStaged(_) => "Remove the values listed in error.details.hits from the staged files and store them with `akm add NAME`; bypass with `git commit --no-verify` only for intentional examples.".into(),
+            Self::NotFound(_) => "Use `akm list` to find the stored name, or supply the value to `akm add NAME` through stdin.".into(),
+            Self::KeychainUnavailable(_) => "Run `akm doctor`. Unlock your existing login Keychain and keep HOME set to your macOS account home; do not reset the Keychain. After upgrading from an unsigned AKM, use `akm migrate --from /path/to/old/akm`.".into(),
+            Self::Diagnostics(_) => "Fix the failed checks listed in error.details, then run `akm doctor` again.".into(),
+            Self::RateLimited(_) => "Wait, then retry only if the operation is safe to repeat.".into(),
+            Self::Internal(_) => "Check the named resource, executable, or macOS Keychain access. Check the operation outcome before retrying a write.".into(),
+        }
+    }
+
+    /// Whether repeating the same request unchanged can succeed; `None` when
+    /// that depends on an outcome AKM cannot know.
+    pub fn retryable(&self) -> Option<bool> {
+        match self {
+            Self::BadInput(_)
+            | Self::Usage { .. }
+            | Self::SecretsStaged(_)
+            | Self::NotFound(_)
+            | Self::Diagnostics(_) => Some(false),
+            Self::RateLimited(_) => Some(true),
+            Self::KeychainUnavailable(_) | Self::Internal(_) => None,
+        }
+    }
+
+    pub fn details(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::SecretsStaged(details) | Self::Diagnostics(details) => Some(details),
+            _ => None,
         }
     }
 
     pub fn code_str(&self) -> &'static str {
         match self {
-            AkmError::BadInput(_) => "bad_input",
-            AkmError::NotFound(_) => "not_found",
-            AkmError::KeychainUnavailable(_) => "keychain_unavailable",
-            AkmError::Internal(_) => "internal_error",
+            Self::BadInput(_) | Self::Usage { .. } => "bad_input",
+            Self::SecretsStaged(_) => "secrets_staged",
+            Self::NotFound(_) => "not_found",
+            Self::KeychainUnavailable(_) => "keychain_unavailable",
+            Self::Diagnostics(_) => "setup_error",
+            Self::RateLimited(_) => "rate_limited",
+            Self::Internal(_) => "internal_error",
         }
     }
 }

@@ -16,8 +16,8 @@ const MAX_RECORD_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Number of most recent entries to print.
-    #[arg(long, default_value_t = 50)]
+    /// Number of most recent entries
+    #[arg(long, short = 'n', default_value_t = 50)]
     pub limit: usize,
 }
 

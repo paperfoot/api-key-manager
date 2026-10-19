@@ -11,10 +11,10 @@ use crate::keychain;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Path to a .env-style file. "-" (or omitted) reads stdin.
+    /// Path to a .env file; - or omitted reads stdin
     pub file: Option<String>,
 
-    /// Parse and report what would be stored without touching the keychain.
+    /// Report what would be stored without touching the Keychain
     #[arg(long)]
     pub dry_run: bool,
 }

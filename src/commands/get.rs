@@ -11,9 +11,9 @@ use crate::keychain;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Key name to fetch.
+    /// Key name
     pub name: String,
-    /// Print the raw value (default is masked).
+    /// Print the unmasked value
     #[arg(long)]
     pub raw: bool,
 }

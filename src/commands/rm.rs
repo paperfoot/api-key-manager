@@ -11,7 +11,7 @@ use crate::keychain;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Key name to remove.
+    /// Key name
     pub name: String,
 }
 

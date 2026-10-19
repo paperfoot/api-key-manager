@@ -6,27 +6,23 @@ use crate::cli::Global;
 use crate::error::{AkmError, Result};
 use crate::keychain;
 
-/// `akm stdin NAME -- <cmd> [args...]`
-///
-/// Reads the named keychain value and writes it to the child's stdin. Replaces
-/// the old `akm push vercel|gh|fly` wrappers — works for any upstream CLI that
-/// accepts a secret on stdin. Child stdout/stderr go through the same redactor
-/// as `akm run`, so error messages can't echo the value back into the agent's
-/// transcript.
+// `akm stdin NAME -- <cmd> [args...]` writes the named value to the child's
+// stdin, for any CLI that accepts a secret there. Child output goes through
+// the same redactor as `akm run`, so errors cannot echo the value back.
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Key name whose value is written to the child's stdin.
+    /// Key whose value goes to the child's stdin
     pub name: String,
 
-    /// Stdin format: raw value (default), or a shell-quoted NAME=value line.
+    /// Stdin format: the raw value, or a shell-quoted NAME=value line
     #[arg(long, default_value = "raw", value_parser = ["raw", "env"])]
     pub format: String,
 
-    /// Disable child stdout/stderr redaction.
+    /// Do not redact the value from child output
     #[arg(long)]
     pub no_redact: bool,
 
-    /// The command (and its args) to run after `--`.
+    /// Command and arguments after --
     #[arg(allow_hyphen_values = true, last = true, required = true)]
     pub command: Vec<String>,
 }

@@ -16,11 +16,11 @@ const STALE_DAYS: i64 = 90;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Show last-updated timestamp and age per key (from the audit log).
+    /// Add last-updated time and age per key (from the audit log)
     #[arg(long)]
     pub long: bool,
 
-    /// Print one key name per line, without JSON or metadata.
+    /// One name per line, without JSON or metadata
     #[arg(long, conflicts_with = "long")]
     pub names_only: bool,
 }

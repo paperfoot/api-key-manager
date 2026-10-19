@@ -11,12 +11,11 @@ use crate::keychain;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Key name. Must match [A-Z_][A-Z0-9_]* (env-var shape).
+    /// Key name matching [A-Z_][A-Z0-9_]*
     pub name: String,
-    /// Value as argv. Creates an extra copy in `ps` and scrollback; the agent
-    /// SDK's subprocess stdin is the preferred path.
+    /// Value; prefer stdin, since argv is visible in ps and scrollback
     pub value: Option<String>,
-    /// Read value from stdin even when argv `value` is present.
+    /// Read the value from stdin even when argv has one
     #[arg(long)]
     pub stdin: bool,
 }

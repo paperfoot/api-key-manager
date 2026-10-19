@@ -1,47 +1,63 @@
+//! Output envelopes (agent-cli-framework, envelope version 1).
+//! Success goes to stdout; errors go to stderr. `agent-info` is raw JSON.
 use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Debug, Serialize)]
-pub struct Envelope<'a> {
-    pub version: &'a str,
-    pub status: &'a str,
-    pub data: Value,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ErrorEnvelope<'a> {
-    pub version: &'a str,
-    pub status: &'a str,
-    pub error: ErrorBody<'a>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ErrorBody<'a> {
-    pub code: &'a str,
-    pub message: String,
-    pub suggestion: Option<String>,
-}
-
 pub const VERSION: &str = "1";
 
-pub fn ok(data: Value) -> String {
-    let env = Envelope {
-        version: VERSION,
-        status: "ok",
-        data,
-    };
-    serde_json::to_string(&env).unwrap_or_else(|_| "{}".to_string())
+#[derive(Serialize)]
+struct Success {
+    version: &'static str,
+    status: &'static str,
+    data: Value,
 }
 
-pub fn err(code: &str, message: impl Into<String>, suggestion: Option<&str>) -> String {
-    let env = ErrorEnvelope {
+#[derive(Serialize)]
+struct Failure<'a> {
+    version: &'static str,
+    status: &'static str,
+    error: ErrorBody<'a>,
+}
+
+#[derive(Serialize)]
+struct ErrorBody<'a> {
+    code: &'a str,
+    message: String,
+    suggestion: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retryable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<&'a Value>,
+}
+
+/// `{version, status: "success", data}`.
+pub fn ok(data: Value) -> String {
+    let envelope = Success {
+        version: VERSION,
+        status: "success",
+        data,
+    };
+    serde_json::to_string(&envelope).expect("a JSON value always serializes")
+}
+
+/// `{version, status: "error", error: {code, message, suggestion, retryable?, details?}}`.
+pub fn err(
+    code: &str,
+    message: impl Into<String>,
+    suggestion: &str,
+    retryable: Option<bool>,
+    details: Option<&Value>,
+) -> String {
+    let envelope = Failure {
         version: VERSION,
         status: "error",
         error: ErrorBody {
             code,
             message: message.into(),
-            suggestion: suggestion.map(|s| s.to_string()),
+            suggestion,
+            retryable,
+            details,
         },
     };
-    serde_json::to_string(&env).unwrap_or_else(|_| "{}".to_string())
+    serde_json::to_string(&envelope).expect("strings and JSON values always serialize")
 }

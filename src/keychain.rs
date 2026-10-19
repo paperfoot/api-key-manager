@@ -101,6 +101,28 @@ pub fn primary_names() -> std::result::Result<Vec<String>, AkmError> {
     names_for_service(SERVICE)
 }
 
+pub fn legacy_names() -> std::result::Result<Vec<String>, AkmError> {
+    names_for_service(LEGACY_SERVICE)
+}
+
+/// Lock state of the default Keychain, read without UI or touching items.
+/// `Ok(true)` when unlocked; `Err(status)` when no default Keychain opens.
+pub fn default_unlocked() -> std::result::Result<bool, i32> {
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        // Deprecated but stable; the file-based Keychain AKM uses has no
+        // replacement status call. NULL selects the default Keychain.
+        fn SecKeychainGetStatus(keychain: *const std::ffi::c_void, status: *mut u32) -> i32;
+    }
+    const UNLOCKED: u32 = 1; // kSecUnlockStateStatus
+    let mut status = 0u32;
+    // SAFETY: NULL is documented as the default Keychain; `status` is a valid out pointer.
+    match unsafe { SecKeychainGetStatus(std::ptr::null(), &mut status) } {
+        0 => Ok(status & UNLOCKED != 0),
+        error => Err(error),
+    }
+}
+
 fn names_for_service(service: &str) -> std::result::Result<Vec<String>, AkmError> {
     let mut opts = ItemSearchOptions::new();
     opts.class(ItemClass::generic_password())

@@ -18,9 +18,9 @@ pub struct Args {
 
 #[derive(Debug, Subcommand)]
 pub enum Action {
-    /// Install the bundled skill into ~/.claude/skills/akm/SKILL.md (plus codex/gemini).
+    /// Install or refresh the skill for Claude Code, Codex and Gemini
     Install,
-    /// Report whether each installed skill matches this binary.
+    /// Check whether installed skills match this binary
     Status,
 }
 
@@ -63,12 +63,26 @@ fn skill_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// `(path, installed, current)` for each supported agent platform.
+pub fn states() -> Vec<(PathBuf, bool, bool)> {
+    skill_dirs()
+        .into_iter()
+        .map(|parent| {
+            let path = parent.join("akm/SKILL.md");
+            let content = std::fs::read_to_string(&path);
+            let current = content.as_deref().ok() == Some(SKILL_MD);
+            (path, content.is_ok(), current)
+        })
+        .collect()
+}
+
 fn status(global: &Global) -> Result<u8> {
-    let entries: Vec<_> = skill_dirs().iter().map(|parent| {
-        let path = parent.join("akm/SKILL.md");
-        let content = std::fs::read_to_string(&path);
-        json!({"path":path, "installed":content.is_ok(), "current":content.as_deref().ok() == Some(SKILL_MD)})
-    }).collect();
+    let entries: Vec<_> = states()
+        .into_iter()
+        .map(|(path, installed, current)| {
+            json!({"path": path, "installed": installed, "current": current})
+        })
+        .collect();
     let current = entries.iter().all(|entry| entry["current"] == true);
     if global.json || !std::io::stdout().is_terminal() {
         println!(

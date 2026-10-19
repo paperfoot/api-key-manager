@@ -10,12 +10,11 @@ use crate::keychain;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Comma-separated subset of keys to export (default: all stored keys).
+    /// Keys to export, comma-separated (default: all)
     #[arg(long, value_delimiter = ',')]
     pub only: Vec<String>,
 
-    /// Output format: "json" (envelope with raw values) or "env"
-    /// (shell-safe NAME=value lines, suitable for `> backup.env`).
+    /// json envelope, or shell-quoted NAME=value lines for a backup file
     #[arg(long, default_value = "json", value_parser = ["json", "env"])]
     pub format: String,
 }

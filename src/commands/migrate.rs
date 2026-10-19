@@ -18,13 +18,13 @@ use crate::keychain;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Trusted older AKM binary that can still read the original items.
+    /// Trusted older AKM binary that can still read the original items
     #[arg(long, value_name = "PATH")]
     pub from: PathBuf,
-    /// Comma-separated names; defaults to all names in the source.
+    /// Names to copy, comma-separated (default: all in the source)
     #[arg(long, value_delimiter = ',')]
     pub only: Vec<String>,
-    /// Preview names without reading or writing secret values.
+    /// Preview names without reading or writing values
     #[arg(long)]
     pub dry_run: bool,
 }
@@ -174,7 +174,8 @@ fn source_json(path: &Path, args: &[&str]) -> Result<Value> {
     }
     let result: Value =
         serde_json::from_slice(&bytes).map_err(|_| source_error("invalid source response"))?;
-    if result["status"] != "ok" {
+    // 0.4+ reports "success"; older releases report "ok".
+    if result["status"] != "success" && result["status"] != "ok" {
         return Err(source_error("source returned an error"));
     }
     Ok(result)

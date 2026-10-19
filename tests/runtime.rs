@@ -597,10 +597,14 @@ fn missing_home_keychain_fails_without_a_dialog_or_hang() {
         Some(b"synthetic-no-keychain-value"),
         COMMAND_TIMEOUT,
     );
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2), "setup errors exit 2");
     assert!(output.stdout.is_empty());
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "keychain_unavailable");
+    assert!(error["error"]["suggestion"]
+        .as_str()
+        .unwrap()
+        .contains("akm doctor"));
     assert!(error["error"]["suggestion"]
         .as_str()
         .unwrap()
