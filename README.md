@@ -132,7 +132,7 @@ Every operation and child lifecycle is recorded in `~/.akm/audit.log` (mode `060
 | `akm rm NAME` | Remove a key (alias `delete`); already absent succeeds. |
 | `akm import FILE` | Import literal dotenv values. `--dry-run` previews without Keychain access. Not transactional. |
 | `akm export` | Export raw values for backup (`--format env` or `json`, `--only` subset). Audit-logged. |
-| `akm migrate --from PATH` | Copy keys from an older AKM executable; see [Upgrading from 0.1 or 0.2](#upgrading-from-01-or-02). |
+| `akm migrate --from PATH` | Copy keys from an older AKM executable; see [Upgrading from 0.1 or 0.2](#upgrade-from-01-or-02). |
 | `akm doctor` | Check Keychain access, signature, legacy entries, skill and audit log. Read-only; reports counts, never names or values. |
 | `akm update` | Print the upgrade command for this installation. No network. |
 | `akm config show \| path` | Show where AKM keeps its audit log, key-age index and Keychain services. |
@@ -157,6 +157,7 @@ AKM follows the [agent-cli-framework](https://github.com/paperfoot/agent-cli-fra
 
 </details>
 
+<a id="upgrade-from-01-or-02"></a>
 <details>
 <summary><b>Upgrading from 0.1 or 0.2</b></summary>
 
