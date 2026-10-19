@@ -86,6 +86,7 @@ dependencies = [
  "clap",
  "dirs",
  "libc",
+ "memchr",
  "predicates",
  "security-framework",
  "serde",
